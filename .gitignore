@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+venv/
+ocr_env/
+
+# Build output
+dist/
+
+# Environment variables
+.env
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Nanobot runtime data
+.nanobot/sessions/
+workspace/memory/
+workspace/uploads/
+workspace/mcp.db
+
+# Personal Configs
+frpc.toml
+cron.json
+
+# Test Artifacts and Logs
+*.png
+*.jsonl
+
+# Test coverage
+coverage/
+
+# IDE
+.vscode/
+.idea/

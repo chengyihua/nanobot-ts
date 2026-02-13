@@ -1,0 +1,8 @@
+{
+  "success": false,
+  "engine": "baidu",
+  "query": "链禾网",
+  "url": "https://www.baidu.com/s?wd=链禾网",
+  "results": [],
+  "error": "ElementHandle.click: Timeout 30000ms exceeded.\nCall log:\n  - attempting click action\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"page-inner_2jZi2\">…</div> intercepts pointer events\n    - retrying click action\n    - waiting 20ms\n    2 × waiting for element to be visible, enabled and stable\n      - element is visible, enabled and stable\n      - scrolling into view if needed\n      - done scrolling\n      - <div class=\"page-inner_2jZi2\">…</div> intercepts pointer events\n    - retrying click action\n      - waiting 100ms\n    56 × waiting for element to be visible, enabled and stable\n       - element is visible, enabled and stable\n       - scrolling into view if needed\n       - done scrolling\n       - <div class=\"page-inner_2jZi2\">…</div> intercepts pointer events\n     - retrying click action\n       - waiting 500ms\n"
+}

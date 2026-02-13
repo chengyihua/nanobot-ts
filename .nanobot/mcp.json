@@ -1,0 +1,32 @@
+{
+  "enabled": true,
+  "servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace",
+        "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/skills"
+      ]
+    },
+    {
+      "name": "sqlite",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-server-sqlite-npx",
+        "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/mcp.db"
+      ]
+    },
+    {
+      "name": "12306-mcp",
+      "command": "npx",
+      "args": [
+        "-y",
+        "12306-mcp"
+      ]
+    }
+  ]
+}
