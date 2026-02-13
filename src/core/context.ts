@@ -31,7 +31,7 @@ export class ContextBuilder {
     await fs.ensureDir(this.workspacePath);
   }
 
-  public async buildSystemPrompt(channel?: string, chatId?: string): Promise<string> {
+  public async buildSystemPrompt(channel?: string, chatId?: string, toolDefinitions?: string): Promise<string> {
     const parts: string[] = [];
 
     // 1. Identity & Core Capabilities
@@ -52,7 +52,12 @@ export class ContextBuilder {
     // 4. Skills
     await this.appendSkills(parts);
 
-    // 5. Tool Usage Rules
+    // 5. Native Tools (Injected)
+    if (toolDefinitions) {
+      parts.push(`# Available System Tools\n\n${toolDefinitions}\n\n(Note: These are NATIVE tools. Use them directly.)`);
+    }
+
+    // 6. Tool Usage Rules
     parts.push(this.getToolUsageRules());
 
     return parts.join('\n\n---\n\n');
@@ -183,15 +188,18 @@ ${skillsSummary}
   private getToolUsageRules(): string {
     return `## Tool Usage Rules (CRITICAL)
 1. **NATIVE TOOLS ONLY**: Use the official tool calling interface. Never type "runCommand:" as text.
-2. **NO PREAMBLE**: Call tools IMMEDIATELY. Do not say "I will...".
-3. **SUBAGENTS**: Use \`spawnSubagent\` for:
+2. **DUAL MODE**: You are both a Chatbot and a Tool User.
+   - **CHAT MODE**: For greetings, jokes, general knowledge, or questions about yourself, **REPLY DIRECTLY WITH TEXT**. Do NOT use tools.
+   - **TOOL MODE**: For file operations, system commands, web search, or complex tasks, **USE TOOLS IMMEDIATELY**.
+3. **NO PREAMBLE (TOOL MODE)**: When you decide to use tools, call them IMMEDIATELY. Do not say "I will...".
+4. **SUBAGENTS**: Use \`spawnSubagent\` for:
    - Complex browser automation (>2 steps)
    - Long-running tasks (>30s)
    - Recursive exploration
-4. **FILE/AUDIO**: 
+5. **FILE/AUDIO**: 
    - To send file: \`SEND_FILE: /path/to/file\` (Verify existence first!)
    - To send voice: \`SEND_VOICE: /path/to/audio\` (Must generate first!)
-5. **LARGE FILES**: Use \`appendFile\` for content >2000 chars.
+6. **LARGE FILES**: Use \`appendFile\` for content >2000 chars.
 `;
   }
 

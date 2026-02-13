@@ -269,4 +269,12 @@ export class ToolRegistry {
       initPromise: this.mcpInitPromise
     };
   }
+
+  public getToolDefinitionsSummary(): string {
+    const { tools } = this.getTools();
+    const toolDefinitions = Object.entries(tools).map(([name, tool]: [string, any]) => {
+      return `- **${name}**: ${tool.description}`;
+    }).join('\n');
+    return toolDefinitions;
+  }
 }

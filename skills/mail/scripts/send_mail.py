@@ -145,7 +145,7 @@ def send_email(
             with smtplib.SMTP_SSL(config['smtp_server'], config['smtp_port']) as server:
                 server.set_debuglevel(0)  # 设置为1可以查看调试信息
                 server.login(config['username'], config['password'])
-                server.sendmail(from_email, to, msg.as_string())
+                server.sendmail(from_email, list(set(to)), msg.as_string())
         else:
             # TLS连接
             with smtplib.SMTP(config['smtp_server'], config['smtp_port']) as server:
@@ -155,7 +155,7 @@ def send_email(
                     server.starttls()
                 
                 server.login(config['username'], config['password'])
-                server.sendmail(from_email, to, msg.as_string())
+                server.sendmail(from_email, list(set(to)), msg.as_string())
         
         print(f"邮件发送成功！收件人: {', '.join(to)}")
         return True

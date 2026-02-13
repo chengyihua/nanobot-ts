@@ -3,6 +3,7 @@ import path from 'path';
 import { Config, getWorkspacePath } from './config.js';
 
 const toolHallucinationPattern = /^\s*(runCommand|readFile|writeFile|listDir|editFile|describeImage|message|spawn|transcribe|synthesize|webSearch|webFetch|cron|spawnSubagent|saveMemory|switchModel|getSystemDiagnostics):\s*(\{[\s\S]*?\}|[^\s\n\r]+)/gim;
+const dsmlHallucinationPattern = /<｜DSML｜function_calls>(?:[\s\S]*?<\/｜DSML｜function_calls>|[\s\S]*$)/gim;
 const directivePattern = /^\s*(?:SEND_FILE|SEND_IMAGE|SEND_VOICE):\s*([^\n\r]+)/gim;
 
 export class SafetyGuard {
@@ -21,26 +22,15 @@ export class SafetyGuard {
   public detectHallucination(history: any[]): boolean {
     const lastMsg = history[history.length - 1];
     if (lastMsg && lastMsg.role === 'assistant') {
-      let hasActualToolCalls = false;
       let text = '';
       if (typeof lastMsg.content === 'string') {
         text = lastMsg.content;
       } else if (Array.isArray(lastMsg.content)) {
-        hasActualToolCalls = lastMsg.content.some((c: any) => (c as any).type === 'tool-call');
         const textPart = lastMsg.content.find((c: any) => (c as any).type === 'text');
         if (textPart) text = (textPart as any).text || '';
       }
 
-      if (text.match(toolHallucinationPattern)) {
-         let matchFound = false;
-         text.replace(toolHallucinationPattern, (match, _p1, _p2, offset) => {
-            if (!this.isInsideCodeBlock(text, offset)) {
-               matchFound = true;
-            }
-            return match;
-         });
-         if (matchFound) return true;
-      } else if (text.match(directivePattern) && !hasActualToolCalls) {
+      if (text.match(dsmlHallucinationPattern)) {
         return true;
       }
     }
@@ -48,41 +38,16 @@ export class SafetyGuard {
   }
 
   public detectIntentMismatch(text: string, hasToolCalls: boolean): boolean {
-    if (hasToolCalls) return false;
-    if (!text) return false;
-
-    const lowerText = text.toLowerCase();
-    const { sent_keywords, target_keywords } = this.config.behavior.intent_mismatch;
-
-    const hasSentIntent = sent_keywords.some(k => lowerText.includes(k.toLowerCase()));
-    const hasTargetIntent = target_keywords.some(k => lowerText.includes(k.toLowerCase()));
-
-    if (hasSentIntent && hasTargetIntent) {
-      console.warn(`[SafetyGuard] Detected intent-action mismatch: Assistant claims action but no tools called.`);
-      return true;
-    }
-    return false;
+    return false; // Disabled as per user request for generalized behavior
   }
 
   public cleanOutput(text: string): string {
     if (!text) return '';
     
     let cleanedText = text;
-    let currentOutputHadHallucination = false;
     
-    if (cleanedText.match(toolHallucinationPattern)) {
-      const newText = cleanedText.replace(toolHallucinationPattern, (match, _p1, _p2, offset) => {
-        if (this.isInsideCodeBlock(cleanedText, offset)) {
-          return match;
-        }
-        currentOutputHadHallucination = true;
-        return '';
-      }).trim();
-
-      if (currentOutputHadHallucination) {
-        console.warn(`[SafetyGuard] Detected hallucination in current output. Cleaning...`);
-        cleanedText = newText;
-      }
+    if (cleanedText.match(dsmlHallucinationPattern)) {
+      cleanedText = cleanedText.replace(dsmlHallucinationPattern, '').trim();
     }
     
     return cleanedText;

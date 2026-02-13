@@ -37,6 +37,27 @@ export class SessionManager {
     return path.join(this.sessionsDir, `${safeKey}${EXTENSIONS.ARCHIVE_JSONL}`);
   }
 
+  public async clearSession(sessionId: string): Promise<void> {
+    // 1. Remove from cache
+    this.cache.delete(sessionId);
+
+    // 2. Remove files from disk
+    const filePath = this.getSessionPath(sessionId);
+    const archivePath = this.getArchivePath(sessionId);
+
+    try {
+      if (await fs.pathExists(filePath)) {
+        await fs.unlink(filePath);
+      }
+      if (await fs.pathExists(archivePath)) {
+        await fs.unlink(archivePath);
+      }
+      console.log(`[Session] Cleared session ${sessionId} (cache and disk).`);
+    } catch (error) {
+      console.error(`[Session] Error clearing session ${sessionId}:`, error);
+    }
+  }
+
   public getHistory(sessionId: string, limit: number = 30): CoreMessage[] {
     const session = this.getOrCreate(sessionId);
     

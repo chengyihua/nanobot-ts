@@ -215,6 +215,8 @@ export class AgentLoop {
   }
 
   private async handleAggregatedMessage(sessionId: string, aggregatedMessage: Message) {
+    console.log(`[Agent] [Session:${sessionId}] Received aggregated message from ${aggregatedMessage.source}`);
+    
     // 构建用户消息并存入历史
     const combinedContent = aggregatedMessage.content;
     const userMessage: CoreMessage = {
@@ -223,7 +225,16 @@ export class AgentLoop {
     };
 
     // 处理图片附件（如果支持）
-    if (aggregatedMessage.metadata?.msgType === 'image' && aggregatedMessage.metadata?.localPath) {
+    if (aggregatedMessage.type === 'image') {
+       // Assuming content is URL or base64
+       const msgContent: any[] = [
+         { type: 'image', image: combinedContent }
+       ];
+       if (aggregatedMessage.metadata?.caption) {
+         msgContent.push({ type: 'text', text: aggregatedMessage.metadata.caption });
+       }
+       userMessage.content = msgContent;
+    } else if (aggregatedMessage.metadata?.msgType === 'image' && aggregatedMessage.metadata?.localPath) {
       const modelId = this.config.agents.defaults.model;
       if (isVisionModel(modelId)) {
         try {
@@ -366,14 +377,18 @@ export class AgentLoop {
 
     if (message.content.trim() === '/reset') {
       console.log(`[Agent] Resetting session ${sessionId}...`);
-      // 强制删除会话锁，让排队的消息能够被处理
+      
+      // 1. 强制删除会话锁
       this.sessionLocks.delete(sessionId);
+      
+      // 2. 清除会话历史 (内存缓存 + 磁盘文件)
+      await this.sessionManager.clearSession(sessionId);
       
       bus.publish({
         id: Math.random().toString(36).substring(7),
         source: 'agent',
         target: channel,
-        content: '🔄 会话锁已强制重置。如果之前有任务卡住，现在应该可以处理新消息了。',
+        content: '🔄 会话已重置。历史记录已清除，内存缓存已刷新。',
         type: 'text',
         timestamp: Date.now(),
         metadata: { ...message.metadata, sessionId, to: message.metadata?.to || chatId },
@@ -420,17 +435,17 @@ export class AgentLoop {
         
         const sanitizedForLLM = this.sanitizeHistory(currentHistory, true);
         
-        let toolChoice: 'auto' | 'required' = 'auto';
+        let toolChoice: 'auto' | 'required' | 'none' = 'auto';
         
         // Hallucination detection
         let hasHallucination = this.safetyGuard.detectHallucination(sanitizedForLLM);
-
-        const userMsg = currentHistory[currentHistory.length - 1];
-        if (userMsg && userMsg.role === 'user' && typeof userMsg.content === 'string') {
-          const toolIntentKeywords = this.config.behavior.tool_intent_keywords;
-          if (toolIntentKeywords.some(k => (userMsg.content as string).toLowerCase().includes(k.toLowerCase()))) {
-            console.log(`[Agent] User message implies tool intent. Setting toolChoice to auto.`);
-          }
+        
+        // Check last assistant message for DSML hallucination
+        const lastHistMsg = sanitizedForLLM[sanitizedForLLM.length - 1];
+        if (lastHistMsg && lastHistMsg.role === 'assistant' && typeof lastHistMsg.content === 'string') {
+           if (lastHistMsg.content.includes('<｜DSML｜function_calls>') || lastHistMsg.content.includes('<tool_code>')) {
+              hasHallucination = true;
+           }
         }
 
         if (hasHallucination) {
@@ -444,7 +459,8 @@ export class AgentLoop {
 
     console.log(`[Agent] Iteration ${iteration}: Sending request to model...`);
     const payloadStr = JSON.stringify(historyToUse);
-    console.log(`[Agent] Messages count: ${historyToUse.length}, Payload size: ${payloadStr.length} chars, Last message: ${JSON.stringify(historyToUse[historyToUse.length-1]).substring(0, 100)}...`);
+    const lastMsg = historyToUse.length > 0 ? historyToUse[historyToUse.length-1] : null;
+    console.log(`[Agent] Messages count: ${historyToUse.length}, Payload size: ${payloadStr.length} chars, Last message: ${lastMsg ? JSON.stringify(lastMsg).substring(0, 100) : 'None'}...`);
     
     let result;
     let pendingToolCalls: any[] = [];
@@ -486,18 +502,16 @@ export class AgentLoop {
         let cleanedText = this.safetyGuard.cleanOutput(originalText);
         const currentOutputHadHallucination = cleanedText !== originalText;
 
-        let currentOutputHasDirective = false;
+        const currentOutputHasDirective = false;
         const directiveValidation = this.safetyGuard.validateDirectives(cleanedText, !!(result.toolCalls && result.toolCalls.length > 0));
         
         if (directiveValidation.hasHallucination) {
-          currentOutputHasDirective = true;
-          cleanedText = directiveValidation.text;
+          // currentOutputHasDirective = true; // Disabled strictly as per user request to rely on prompt
+          // cleanedText = directiveValidation.text;
         }
 
-        const intentMismatch = this.safetyGuard.detectIntentMismatch(
-          cleanedText, 
-          !!(result.toolCalls && result.toolCalls.length > 0)
-        );
+        // Disabled IntentMismatch check as it conflicts with natural language capabilities
+        const intentMismatch = false;
 
         const { directives: currentDirectives, cleanText: pureText } = this.safetyGuard.parseDirectives(cleanedText);
         
@@ -576,10 +590,24 @@ export class AgentLoop {
         } else if (currentOutputHadHallucination || currentOutputHasDirective || intentMismatch) {
           console.log(`[Agent] Iteration ${iteration}: Hallucination, premature directive or intent mismatch detected. Retrying with correction...`);
           
-          if (intentMismatch && iteration < maxIterations) {
+          let correctionText = '';
+
+          if (currentOutputHadHallucination) {
+             correctionText += '[系统警告] 检测到你尝试使用纯文本格式调用工具（例如 "runCommand: {...}" 或 XML 标签）。这是被禁止的。如果你需要调用工具，必须使用系统提供的原生工具调用（Function Calling）功能。如果你的意图只是聊天，请直接回答，不要生成伪造的工具调用代码。\n';
+          }
+
+          if (currentOutputHasDirective) {
+             correctionText += '[系统警告] 检测到你使用了文件/媒体发送指令（如 SEND_FILE），但相关文件并不存在。请先调用工具生成或确认文件存在，然后再发送指令。\n';
+          }
+
+          if (intentMismatch) {
+             correctionText += '[系统警告] 你声称已发送或生成了内容，但你没有调用任何工具。请务必调用相应的工具来完成操作，不要只是描述要做什么。\n';
+          }
+
+          if (iteration < maxIterations && correctionText) {
             const correctionMsg = {
               role: 'user',
-              content: '[系统纠偏] 你声称已发送或生成了内容，但你没有调用任何工具。请务必调用相应的工具来完成操作，不要只是描述要做什么。',
+              content: correctionText.trim(),
             } as any;
             await this.sessionManager.addMessage(sessionId, correctionMsg);
             currentHistory.push(correctionMsg);
@@ -656,42 +684,60 @@ export class AgentLoop {
     }
   }
 
-  private async handleMessage(message: Message, abortSignal?: AbortSignal) {
+  private async handleMessage(message: Message, abortSignal: AbortSignal) {
     const sessionId = message.metadata?.sessionId || 'default';
-    if (!sessionId) {
-      console.warn('[Agent] Message missing sessionId, skipping.');
-      return;
-    }
-
-    const [parsedChannel, parsedChatId] = parseSessionKey(sessionId);
-    const channel = message.metadata?.originChannel || message.source || parsedChannel || 'cli';
-    const chatId = message.metadata?.originChatId || message.metadata?.fromUser || parsedChatId || 'default';
-
-    const contextBuilder = new ContextBuilder(this.config);
-    await contextBuilder.initialize();
-    const systemPrompt = await contextBuilder.buildSystemPrompt(channel, chatId);
-
-    console.log(`[Agent] Processing message from ${message.source} (Target: ${message.target || 'all'}) in session ${sessionId}`);
-
-    const { tools, initPromise } = this.toolRegistry.getTools({
-      subagentManager: this.subagentManager,
-      memoryStore: this.memoryStore,
-      sessionManager: this.sessionManager,
-      cronService: this.cronService,
-      originChannel: channel,
-      originChatId: chatId,
-      agentLoop: this, 
-    });
-
-    if (initPromise) {
-      await initPromise;
-    }
-
-    let history = this.sessionManager.getHistory(sessionId);
-
+    const channel = message.metadata?.originChannel || message.source || 'cli';
+    const chatId = message.metadata?.originChatId || message.metadata?.fromUser || 'default';
+    
+    console.log(`[Agent] [Session:${sessionId}] Starting handleMessage logic. Channel: ${channel}`);
+    
     try {
-      await this.runAgentLoop(sessionId, history, tools, contextBuilder, systemPrompt, channel, chatId, message, abortSignal);
+      const history = await this.sessionManager.getHistory(sessionId);
+      if (history.length === 0) {
+        // 如果没有历史记录，可能是首次会话，或者 sessionManager 出错
+        console.warn(`[Agent] [Session:${sessionId}] History is empty, initializing with user message.`);
+      }
+      
+      const contextBuilder = new ContextBuilder(this.config);
+      await contextBuilder.initialize();
+      
+      // Inject tool definitions into system prompt
+      const toolDefinitions = this.toolRegistry.getToolDefinitionsSummary();
+      const systemPrompt = await contextBuilder.buildSystemPrompt(channel, chatId, toolDefinitions);
+
+      const { tools, initPromise } = this.toolRegistry.getTools({
+        subagentManager: this.subagentManager,
+        memoryStore: this.memoryStore,
+        sessionManager: this.sessionManager,
+        cronService: this.cronService,
+        originChannel: channel,
+        originChatId: chatId,
+        agentLoop: this, 
+      });
+
+      if (initPromise) {
+        await initPromise;
+      }
+      
+      // 启动循环
+      await this.runAgentLoop(
+        sessionId, 
+        history, 
+        tools, 
+        contextBuilder, 
+        systemPrompt, 
+        channel, 
+        chatId, 
+        message,
+        abortSignal
+      );
+      
+      console.log(`[Agent] [Session:${sessionId}] Loop completed.`);
+
     } catch (error: any) {
+      console.error(`[Agent] [Session:${sessionId}] Error in handleMessage:`, error);
+      
+      // Error handling logic (restored)
       let userFriendlyError = error.message;
       if (userFriendlyError.includes('JSON parsing failed') && userFriendlyError.includes('Text:')) {
         const textIndex = userFriendlyError.indexOf('Text:');
@@ -702,16 +748,31 @@ export class AgentLoop {
         }
       }
 
-      console.error(`[Agent] Error processing message: ${userFriendlyError}`);
-
       if (error.message?.includes('Image input not supported') || error.message?.includes('multimodal')) {
-        console.warn('[Agent] Model reported image support issue. Retrying with text only...');
-        
+        console.warn(`[Agent] [Session:${sessionId}] Model reported image support issue. Retrying with text only...`);
         try {
-          await this.runAgentLoop(sessionId, history, tools, contextBuilder, systemPrompt, channel, chatId, message, abortSignal, true);
-          return;
+            // Need to rebuild tools/context if needed, but for retry just call runAgentLoop with forceTextOnly=true
+            const history = await this.sessionManager.getHistory(sessionId);
+            const contextBuilder = new ContextBuilder(this.config);
+            await contextBuilder.initialize();
+            
+            const toolDefinitions = this.toolRegistry.getToolDefinitionsSummary();
+            const systemPrompt = await contextBuilder.buildSystemPrompt(channel, chatId, toolDefinitions);
+            
+            const { tools } = this.toolRegistry.getTools({
+                subagentManager: this.subagentManager,
+                memoryStore: this.memoryStore,
+                sessionManager: this.sessionManager,
+                cronService: this.cronService,
+                originChannel: channel,
+                originChatId: chatId,
+                agentLoop: this, 
+            });
+
+            await this.runAgentLoop(sessionId, history, tools, contextBuilder, systemPrompt, channel, chatId, message, abortSignal, true);
+            return;
         } catch (retryError: any) {
-          console.error(`[Agent] Retry failed: ${retryError.message}`);
+             console.error(`[Agent] [Session:${sessionId}] Retry failed: ${retryError.message}`);
         }
       }
 

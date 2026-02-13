@@ -81,6 +81,8 @@ export class HeartbeatService {
   private async _runLoop() {
     if (!this.running) return;
 
+    const startTime = Date.now();
+
     try {
       await this.tick();
     } catch (error: any) {
@@ -88,7 +90,12 @@ export class HeartbeatService {
     }
 
     if (this.running) {
-      this.timer = setTimeout(() => this._runLoop(), this.intervalS * 1000);
+      // Calculate delay to maintain a stable start-to-start interval
+      const elapsed = Date.now() - startTime;
+      const intervalMs = this.intervalS * 1000;
+      const delay = Math.max(0, intervalMs - elapsed);
+      
+      this.timer = setTimeout(() => this._runLoop(), delay);
     }
   }
 
