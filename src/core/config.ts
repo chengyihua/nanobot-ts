@@ -180,6 +180,16 @@ export const ToolsConfigSchema = z.object({
   restrict_to_workspace: z.boolean().default(false),
 });
 
+// Behavior (Refactored hardcoded values)
+export const BehaviorConfigSchema = z.object({
+  stop_keywords: z.array(z.string()).default(['停止', 'stop', 'cancel', 'abort', '别做了', '停下']),
+  tool_intent_keywords: z.array(z.string()).default(['列出', '读取', '查找', '搜索', '运行', '执行', 'list', 'read', 'find', 'search', 'run', 'exec']),
+  intent_mismatch: z.object({
+    sent_keywords: z.array(z.string()).default(['发送', '已发', '发给', 'sent', 'delivered']),
+    target_keywords: z.array(z.string()).default(['语音', '文件', '图片', '截图', '录屏', '录音', 'voice', 'audio', 'file', 'image', 'screenshot', 'record']),
+  }).default({}),
+});
+
 // Root Config
 export const ConfigSchema = z.object({
   agents: AgentsConfigSchema.default({}),
@@ -188,6 +198,7 @@ export const ConfigSchema = z.object({
   gateway: GatewayConfigSchema.default({}),
   tools: ToolsConfigSchema.default({}),
   heartbeat: HeartbeatConfigSchema.default({}),
+  behavior: BehaviorConfigSchema.default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

@@ -3,19 +3,17 @@ import fs from 'fs-extra';
 import path from 'path';
 import * as dotenv from 'dotenv';
 import { Config, getWorkspacePath, loadConfig } from './config.js';
-import { buildContext } from './context.js';
+import { ContextBuilder } from './context.js';
 import { sessionManager, SessionManager } from './session.js';
-import { createTools } from '../tools/index.js';
+import { ToolRegistry } from './tool-registry.js';
 import { bus, Message } from './bus.js';
 import { SubagentManager } from './subagent.js';
 import { MemoryStore } from './memory.js';
 import { CronService } from '../cron/service.js';
 import { parseSessionKey } from '../utils/helpers.js';
 import { createModel, isVisionModel } from '../providers/registry.js';
-
-const toolHallucinationPattern = /^\s*(runCommand|readFile|writeFile|listDir|editFile|describeImage|message|spawn|transcribe|synthesize|webSearch|webFetch|cron|spawnSubagent|saveMemory|switchModel|getSystemDiagnostics):\s*(\{[\s\S]*?\}|[^\s\n\r]+)/gim;
-const directivePattern = /^\s*(?:SEND_FILE|SEND_IMAGE|SEND_VOICE):\s*([^\n\r]+)/gim;
-
+import { MessageAggregator } from './message-aggregator.js';
+import { SafetyGuard } from './safety-guard.js';
 
 export class AgentLoop {
   private config: Config;
@@ -23,22 +21,21 @@ export class AgentLoop {
   private subagentManager?: SubagentManager;
   private memoryStore?: MemoryStore;
   private sessionManager: SessionManager;
+  private messageAggregator: MessageAggregator;
+  private safetyGuard: SafetyGuard;
+  private toolRegistry: ToolRegistry;
 
   private currentModelId: string | null = null;
   private sessionLocks: Map<string, Promise<void>> = new Map();
   private sessionAbortControllers: Map<string, AbortController> = new Map();
-  private sessionAggregators: Map<string, { timer: NodeJS.Timeout; messages: Message[] }> = new Map();
 
-  constructor(config: Config, cronService?: CronService, sessionMgr?: SessionManager) {
+  constructor(config: Config, cronService?: CronService, sessionMgr?: SessionManager, toolRegistry?: ToolRegistry) {
     this.config = config;
     this.cronService = cronService;
     this.sessionManager = sessionMgr || sessionManager;
-  }
-
-  private isInsideCodeBlock(text: string, pos: number) {
-    const prefix = text.substring(0, pos);
-    const codeBlocks = prefix.match(/```/g);
-    return codeBlocks && codeBlocks.length % 2 !== 0;
+    this.safetyGuard = new SafetyGuard(config);
+    this.messageAggregator = new MessageAggregator(this.handleAggregatedMessage.bind(this));
+    this.toolRegistry = toolRegistry || new ToolRegistry(config);
   }
 
   private sanitizeHistory(history: any[], isFinalForLLM: boolean = false) {
@@ -109,16 +106,88 @@ export class AgentLoop {
     return result;
   }
 
+  private async executeTools(
+    toolCalls: any[], 
+    tools: any, 
+    currentHistory: any[], 
+    abortSignal?: AbortSignal
+  ): Promise<{ results: any[], missing: any[] }> {
+    const toolResults: any[] = [];
+    const pendingToolCalls = [...toolCalls];
+
+    // Parallel execution logic
+    const toolPromises = toolCalls.map(async (toolCall: any) => {
+      if (abortSignal?.aborted) return null;
+      
+      console.log(`[Agent] Tool Call: ${toolCall.toolName}`);
+      const tool = (tools as any)[toolCall.toolName];
+      if (tool) {
+        try {
+          const toolResult = await tool.execute(toolCall.args, { 
+            toolCallId: toolCall.toolCallId, 
+            messages: currentHistory,
+            abortSignal: abortSignal 
+          });
+          return {
+            type: 'tool-result',
+            toolCallId: toolCall.toolCallId,
+            toolName: toolCall.toolName,
+            result: toolResult,
+          };
+        } catch (err: any) {
+          console.error(`[Agent] Tool execution error: ${err.message}`);
+          return {
+            type: 'tool-result',
+            toolCallId: toolCall.toolCallId,
+            toolName: toolCall.toolName,
+            result: `Error: ${err.message}`,
+            isError: true,
+          };
+        }
+      } else {
+        console.warn(`[Agent] Tool not found: ${toolCall.toolName}`);
+        return {
+          type: 'tool-result',
+          toolCallId: toolCall.toolCallId,
+          toolName: toolCall.toolName,
+          result: `Error: Tool "${toolCall.toolName}" not found.`,
+          isError: true,
+        };
+      }
+    });
+
+    const results = await Promise.all(toolPromises);
+    const validResults = results.filter(r => r !== null);
+    toolResults.push(...validResults);
+    
+    const completedIds = new Set(toolResults.map(r => r.toolCallId));
+    const missingResults = pendingToolCalls
+      .filter(tc => !completedIds.has(tc.toolCallId))
+      .map(tc => ({
+        type: 'tool-result',
+        toolCallId: tc.toolCallId,
+        toolName: tc.toolName,
+        result: "Error: Task interrupted or aborted before execution.",
+        isError: true
+      }));
+
+    return { results: toolResults, missing: missingResults };
+  }
+
   public async start() {
     console.log('[Agent] Loop started. Waiting for messages...');
     
+    // Initialize Tool Registry (load MCP, plugins, etc.)
+    await this.toolRegistry.initialize();
+
     const workspacePath = getWorkspacePath(this.config);
     this.memoryStore = new MemoryStore(workspacePath);
     this.subagentManager = new SubagentManager(
       this.getModel(),
       workspacePath,
       bus,
-      this.config
+      this.config,
+      this.toolRegistry
     );
 
     // Listen for messages targeted at the agent
@@ -141,117 +210,93 @@ export class AgentLoop {
       }
 
       // 聚合逻辑
-      let aggregator = this.sessionAggregators.get(sessionId);
-      if (aggregator) {
-        clearTimeout(aggregator.timer);
-        aggregator.messages.push(message);
-      } else {
-        aggregator = {
-          messages: [message],
-          timer: null as any
-        };
-        this.sessionAggregators.set(sessionId, aggregator);
-      }
-
-        // 1.5s 聚合窗口结束后执行
-        aggregator.timer = setTimeout(async () => {
-          const currentAggregator = this.sessionAggregators.get(sessionId);
-          if (!currentAggregator) return;
-          this.sessionAggregators.delete(sessionId);
-
-          // 合并消息内容
-          const combinedContent = currentAggregator.messages.map(m => m.content).join('\n\n');
-          const firstMsg = currentAggregator.messages[0];
-          const aggregatedMessage: Message = {
-            ...firstMsg,
-            content: combinedContent,
-            metadata: {
-              ...firstMsg.metadata,
-              aggregatedCount: currentAggregator.messages.length
-            }
-          };
-
-          // 构建用户消息并存入历史
-          const userMessage: CoreMessage = {
-            role: 'user',
-            content: combinedContent,
-          };
-
-          // 处理图片附件（如果支持）
-          if (aggregatedMessage.metadata?.msgType === 'image' && aggregatedMessage.metadata?.localPath) {
-            const modelId = this.config.agents.defaults.model;
-            if (isVisionModel(modelId)) {
-              try {
-                const workspacePath = getWorkspacePath(this.config);
-                const fullPath = path.isAbsolute(aggregatedMessage.metadata.localPath) 
-                  ? aggregatedMessage.metadata.localPath 
-                  : path.join(workspacePath, aggregatedMessage.metadata.localPath);
-                
-                if (await fs.pathExists(fullPath)) {
-                  const imageBuffer = await fs.readFile(fullPath);
-                  const base64Image = imageBuffer.toString('base64');
-                  const mimeType = fullPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
-                  
-                  userMessage.content = [
-                    { type: 'text', text: combinedContent },
-                    { type: 'image', image: base64Image, mimeType },
-                  ];
-                }
-              } catch (err) {
-                console.error('[Agent] Error attaching image to message:', err);
-              }
-            }
-          }
-          
-          // 始终先存入历史记录
-          await this.sessionManager.addMessage(sessionId, userMessage);
-
-          // 智能中断逻辑：只有当新消息是明确的停止指令时，才中断当前任务
-          // 否则，让新消息排队，保证上下文的完整性和工具执行的原子性
-          const isStopCommand = /^(停止|stop|cancel|abort|别做了|停下)/i.test(combinedContent.trim());
-          
-          if (isStopCommand && this.sessionAbortControllers.has(sessionId)) {
-            console.log(`[Agent] Stop command detected for session ${sessionId}. Aborting current task.`);
-            this.sessionAbortControllers.get(sessionId)?.abort();
-          }
-
-          // 消息处理队列锁
-          // 如果当前有任务在运行，我们等待它完成（除非被上述逻辑强制中断）
-          // 使用 Promise 链实现简单的队列
-          const currentLock = this.sessionLocks.get(sessionId) || Promise.resolve();
-          
-          const nextTask = currentLock.then(async () => {
-             // 在开始处理前，我们不再手动检查去重，而是依赖 handleMessage 内部的状态隔离
-             // 每一条排队的消息都会触发一次 handleMessage，读取当时的完整历史
-             
-             const controller = new AbortController();
-             this.sessionAbortControllers.set(sessionId, controller);
-            
-            try {
-              // 重新获取最新的聚合消息（因为在等待期间可能有新消息进入 History）
-              // 但为了简化，我们还是传入当前的 userMessage 作为触发器
-              // handleMessage 会重新读取 History
-              await this.handleMessage(aggregatedMessage, controller.signal);
-            } catch (error: any) {
-              if (error.name === 'AbortError' || error.message === 'AbortError' || error.message === 'signal is aborted') {
-                console.log(`[Agent] Task aborted for session ${sessionId}`);
-              } else {
-                console.error(`[Agent] Error in task for session ${sessionId}:`, error);
-              }
-            } finally {
-               // 只有当当前的 controller 仍然是这一个时才删除
-              if (this.sessionAbortControllers.get(sessionId) === controller) {
-                this.sessionAbortControllers.delete(sessionId);
-              }
-            }
-          }).catch(err => {
-            console.error(`[Agent] Queue error for session ${sessionId}:`, err);
-          });
-
-          // 更新锁
-          this.sessionLocks.set(sessionId, nextTask);
-        }, 1500); // 1.5s 聚合窗口
+      this.messageAggregator.add(sessionId, message);
     });
+  }
+
+  private async handleAggregatedMessage(sessionId: string, aggregatedMessage: Message) {
+    // 构建用户消息并存入历史
+    const combinedContent = aggregatedMessage.content;
+    const userMessage: CoreMessage = {
+      role: 'user',
+      content: combinedContent,
+    };
+
+    // 处理图片附件（如果支持）
+    if (aggregatedMessage.metadata?.msgType === 'image' && aggregatedMessage.metadata?.localPath) {
+      const modelId = this.config.agents.defaults.model;
+      if (isVisionModel(modelId)) {
+        try {
+          const workspacePath = getWorkspacePath(this.config);
+          const fullPath = path.isAbsolute(aggregatedMessage.metadata.localPath) 
+            ? aggregatedMessage.metadata.localPath 
+            : path.join(workspacePath, aggregatedMessage.metadata.localPath);
+          
+          if (await fs.pathExists(fullPath)) {
+            const imageBuffer = await fs.readFile(fullPath);
+            const base64Image = imageBuffer.toString('base64');
+            const mimeType = fullPath.endsWith('.png') ? 'image/png' : 'image/jpeg';
+            
+            userMessage.content = [
+              { type: 'text', text: combinedContent },
+              { type: 'image', image: base64Image, mimeType },
+            ];
+          }
+        } catch (err) {
+          console.error('[Agent] Error attaching image to message:', err);
+        }
+      }
+    }
+    
+    // 始终先存入历史记录
+    await this.sessionManager.addMessage(sessionId, userMessage);
+
+    // 智能中断逻辑：只有当新消息是明确的停止指令时，才中断当前任务
+    // 否则，让新消息排队，保证上下文的完整性和工具执行的原子性
+    const stopKeywords = this.config.behavior.stop_keywords.join('|');
+    const stopPattern = new RegExp(`^(${stopKeywords})`, 'i');
+    const isStopCommand = stopPattern.test(combinedContent.trim());
+    
+    if (isStopCommand && this.sessionAbortControllers.has(sessionId)) {
+      console.log(`[Agent] Stop command detected for session ${sessionId}. Aborting current task.`);
+      this.sessionAbortControllers.get(sessionId)?.abort();
+    }
+
+    // 消息处理队列锁
+    // 如果当前有任务在运行，我们等待它完成（除非被上述逻辑强制中断）
+    // 使用 Promise 链实现简单的队列
+    const currentLock = this.sessionLocks.get(sessionId) || Promise.resolve();
+    
+    const nextTask = currentLock.then(async () => {
+       // 在开始处理前，我们不再手动检查去重，而是依赖 handleMessage 内部的状态隔离
+       // 每一条排队的消息都会触发一次 handleMessage，读取当时的完整历史
+       
+       const controller = new AbortController();
+       this.sessionAbortControllers.set(sessionId, controller);
+      
+      try {
+        // 重新获取最新的聚合消息（因为在等待期间可能有新消息进入 History）
+        // 但为了简化，我们还是传入当前的 userMessage 作为触发器
+        // handleMessage 会重新读取 History
+        await this.handleMessage(aggregatedMessage, controller.signal);
+      } catch (error: any) {
+        if (error.name === 'AbortError' || error.message === 'AbortError' || error.message === 'signal is aborted') {
+          console.log(`[Agent] Task aborted for session ${sessionId}`);
+        } else {
+          console.error(`[Agent] Error in task for session ${sessionId}:`, error);
+        }
+      } finally {
+         // 只有当当前的 controller 仍然是这一个时才删除
+        if (this.sessionAbortControllers.get(sessionId) === controller) {
+          this.sessionAbortControllers.delete(sessionId);
+        }
+      }
+    }).catch(err => {
+      console.error(`[Agent] Queue error for session ${sessionId}:`, err);
+    });
+
+    // 更新锁
+    this.sessionLocks.set(sessionId, nextTask);
   }
 
   public async switchModel(modelId: string) {
@@ -277,13 +322,22 @@ export class AgentLoop {
         dotenv.config({ override: true });
         const newConfig = await loadConfig();
         this.config = newConfig;
+        
+        // Re-initialize Tool Registry
+        if (this.toolRegistry) {
+          await this.toolRegistry.close();
+        }
+        this.toolRegistry = new ToolRegistry(this.config);
+        await this.toolRegistry.initialize();
+
         const workspacePath = getWorkspacePath(this.config);
         this.memoryStore = new MemoryStore(workspacePath);
         this.subagentManager = new SubagentManager(
           this.getModel(),
           workspacePath,
           bus,
-          this.config
+          this.config,
+          this.toolRegistry
         );
         console.log('[Agent] Reload successful.');
         bus.publish({
@@ -332,11 +386,13 @@ export class AgentLoop {
     sessionId: string,
     initialHistory: any[],
     tools: any,
-    context: any,
+    contextBuilder: ContextBuilder,
+    systemPrompt: string,
     channel: string,
     chatId: string,
     message: Message,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    forceTextOnly: boolean = false
   ) {
     let iteration = 0;
     let finalContent = '';
@@ -367,37 +423,12 @@ export class AgentLoop {
         let toolChoice: 'auto' | 'required' = 'auto';
         
         // Hallucination detection
-        let hasHallucination = false;
-        const lastMsg = sanitizedForLLM[sanitizedForLLM.length - 1];
-        if (lastMsg && lastMsg.role === 'assistant') {
-          let hasActualToolCalls = false;
-          let text = '';
-          if (typeof lastMsg.content === 'string') {
-            text = lastMsg.content;
-          } else if (Array.isArray(lastMsg.content)) {
-            hasActualToolCalls = lastMsg.content.some((c: any) => (c as any).type === 'tool-call');
-            const textPart = lastMsg.content.find((c: any) => (c as any).type === 'text');
-            if (textPart) text = (textPart as any).text || '';
-          }
-
-          if (text.match(toolHallucinationPattern)) {
-             let matchFound = false;
-             text.replace(toolHallucinationPattern, (match, _p1, _p2, offset) => {
-                if (!this.isInsideCodeBlock(text, offset)) {
-                   matchFound = true;
-                }
-                return match;
-             });
-             if (matchFound) hasHallucination = true;
-          } else if (text.match(directivePattern) && !hasActualToolCalls) {
-            hasHallucination = true;
-          }
-        }
+        let hasHallucination = this.safetyGuard.detectHallucination(sanitizedForLLM);
 
         const userMsg = currentHistory[currentHistory.length - 1];
         if (userMsg && userMsg.role === 'user' && typeof userMsg.content === 'string') {
-          const toolIntentKeywords = ['列出', '读取', '查找', '搜索', '运行', '执行', 'list', 'read', 'find', 'search', 'run', 'exec'];
-          if (toolIntentKeywords.some(k => (userMsg.content as string).toLowerCase().includes(k))) {
+          const toolIntentKeywords = this.config.behavior.tool_intent_keywords;
+          if (toolIntentKeywords.some(k => (userMsg.content as string).toLowerCase().includes(k.toLowerCase()))) {
             console.log(`[Agent] User message implies tool intent. Setting toolChoice to auto.`);
           }
         }
@@ -407,19 +438,24 @@ export class AgentLoop {
           toolChoice = 'required';
         }
 
-        console.log(`[Agent] Iteration ${iteration}: Sending request to model...`);
-        const payloadStr = JSON.stringify(sanitizedForLLM);
-        console.log(`[Agent] Messages count: ${sanitizedForLLM.length}, Payload size: ${payloadStr.length} chars, Last message: ${JSON.stringify(sanitizedForLLM[sanitizedForLLM.length-1]).substring(0, 100)}...`);
-        
-        let result;
-        let pendingToolCalls: any[] = [];
+    const modelId = this.currentModelId || this.config.agents.defaults.model;
+    const isVision = forceTextOnly ? false : isVisionModel(modelId);
+    const historyToUse = contextBuilder.buildMessages(sanitizedForLLM, modelId, isVision);
 
-        try {
-          result = await generateText({
-            model,
-            system: context.systemPrompt,
-            messages: sanitizedForLLM,
-            tools,
+    console.log(`[Agent] Iteration ${iteration}: Sending request to model...`);
+    const payloadStr = JSON.stringify(historyToUse);
+    console.log(`[Agent] Messages count: ${historyToUse.length}, Payload size: ${payloadStr.length} chars, Last message: ${JSON.stringify(historyToUse[historyToUse.length-1]).substring(0, 100)}...`);
+    
+    let result;
+    let pendingToolCalls: any[] = [];
+
+    try {
+      result = await generateText({
+        model,
+        system: systemPrompt,
+        messages: historyToUse,
+        tools,
+
             toolChoice,
             maxSteps: 1, 
             temperature: this.config.agents.defaults.temperature,
@@ -446,72 +482,30 @@ export class AgentLoop {
           finishReason: result.finishReason
         });
 
-        let cleanedText = result.text || '';
-        let currentOutputHadHallucination = false;
-        if (cleanedText.match(toolHallucinationPattern)) {
-          const newText = cleanedText.replace(toolHallucinationPattern, (match, _p1, _p2, offset) => {
-            if (this.isInsideCodeBlock(cleanedText, offset)) {
-              return match;
-            }
-            currentOutputHadHallucination = true;
-            return '';
-          }).trim();
-
-          if (currentOutputHadHallucination) {
-            console.warn(`[Agent] Detected hallucination in current output. Cleaning...`);
-            cleanedText = newText;
-          }
-        }
+        const originalText = result.text || '';
+        let cleanedText = this.safetyGuard.cleanOutput(originalText);
+        const currentOutputHadHallucination = cleanedText !== originalText;
 
         let currentOutputHasDirective = false;
-        if (cleanedText.match(directivePattern) && (!result.toolCalls || result.toolCalls.length === 0)) {
-          const workspacePath = getWorkspacePath(this.config);
-          let hasActualHallucination = false;
-          
-          const newText = cleanedText.replace(directivePattern, (match, filePath, offset) => {
-            if (this.isInsideCodeBlock(cleanedText, offset)) return match;
-            
-            const pathToCheck = filePath.trim().replace(/["']$/g, '').replace(/^["']/g, '').trim();
-            const absolutePath = path.isAbsolute(pathToCheck) ? pathToCheck : path.join(workspacePath, pathToCheck);
-            
-            const isVideo = pathToCheck.toLowerCase().match(/\.(mp4|mov|avi|mkv|wmv)$/);
-            
-            if (fs.existsSync(absolutePath) || isVideo) {
-              return match; 
-            }
-            
-            console.warn(`[Agent] Detected premature directive with non-existent file: ${pathToCheck}. Cleaning...`);
-            hasActualHallucination = true;
-            return '';
-          }).trim();
-          
-          if (hasActualHallucination) {
-            currentOutputHasDirective = true;
-            cleanedText = newText;
-          }
-        }
-
-        let intentMismatch = false;
-        const lowerText = cleanedText.toLowerCase();
-        const sentKeywords = ['发送', '已发', '发给', 'sent', 'delivered'];
-        const targetKeywords = ['语音', '文件', '图片', '截图', '录屏', '录音', 'voice', 'audio', 'file', 'image', 'screenshot', 'record'];
+        const directiveValidation = this.safetyGuard.validateDirectives(cleanedText, !!(result.toolCalls && result.toolCalls.length > 0));
         
-        const hasSentIntent = sentKeywords.some(k => lowerText.includes(k));
-        const hasTargetIntent = targetKeywords.some(k => lowerText.includes(k));
-
-        if ((!result.toolCalls || result.toolCalls.length === 0) && (hasSentIntent && hasTargetIntent)) {
-          console.warn(`[Agent] Detected intent-action mismatch: Assistant claims action but no tools called in this iteration.`);
-          intentMismatch = true;
+        if (directiveValidation.hasHallucination) {
+          currentOutputHasDirective = true;
+          cleanedText = directiveValidation.text;
         }
 
-        const currentDirectives = cleanedText.match(directivePattern);
-        if (currentDirectives) {
+        const intentMismatch = this.safetyGuard.detectIntentMismatch(
+          cleanedText, 
+          !!(result.toolCalls && result.toolCalls.length > 0)
+        );
+
+        const { directives: currentDirectives, cleanText: pureText } = this.safetyGuard.parseDirectives(cleanedText);
+        
+        if (currentDirectives.length > 0) {
           for (const d of currentDirectives) {
-            accumulatedDirectives.add(d.trim());
+            accumulatedDirectives.add(d);
           }
         }
-
-        let pureText = cleanedText.replace(directivePattern, '').trim();
 
         if (pureText) {
           if (result.toolCalls && result.toolCalls.length > 0) {
@@ -542,7 +536,7 @@ export class AgentLoop {
           content: assistantContent.length > 0 ? assistantContent : '',
         } as any;
 
-        await sessionManager.addMessage(sessionId, assistantMessage);
+        await this.sessionManager.addMessage(sessionId, assistantMessage);
         currentHistory.push(assistantMessage);
 
         if (currentDirectives) {
@@ -552,84 +546,32 @@ export class AgentLoop {
         if (result.toolCalls && result.toolCalls.length > 0) {
           console.log(`[Agent] Iteration ${iteration}: Executing ${result.toolCalls.length} tools...`);
           
-          const toolResults: any[] = [];
-          try {
-            // Parallel execution logic
-            const toolPromises = result.toolCalls.map(async (toolCall: any) => {
-              if (abortSignal?.aborted) return null;
-              
-              console.log(`[Agent] Tool Call: ${toolCall.toolName}`);
-              const tool = (tools as any)[toolCall.toolName];
-              if (tool) {
-                try {
-                  const toolResult = await tool.execute(toolCall.args, { 
-                    toolCallId: toolCall.toolCallId, 
-                    messages: currentHistory,
-                    abortSignal: abortSignal 
-                  });
-                  return {
-                    type: 'tool-result',
-                    toolCallId: toolCall.toolCallId,
-                    toolName: toolCall.toolName,
-                    result: toolResult,
-                  };
-                } catch (err: any) {
-                  console.error(`[Agent] Tool execution error: ${err.message}`);
-                  return {
-                    type: 'tool-result',
-                    toolCallId: toolCall.toolCallId,
-                    toolName: toolCall.toolName,
-                    result: `Error: ${err.message}`,
-                    isError: true,
-                  };
-                }
-              } else {
-                console.warn(`[Agent] Tool not found: ${toolCall.toolName}`);
-                return {
-                  type: 'tool-result',
-                  toolCallId: toolCall.toolCallId,
-                  toolName: toolCall.toolName,
-                  result: `Error: Tool "${toolCall.toolName}" not found.`,
-                  isError: true,
-                };
-              }
-            });
+          const { results, missing } = await this.executeTools(
+            result.toolCalls,
+            tools,
+            currentHistory,
+            abortSignal
+          );
+          
+          allToolResults.push(...results);
 
-            const results = await Promise.all(toolPromises);
-            const validResults = results.filter(r => r !== null);
-            toolResults.push(...validResults);
-            allToolResults.push(...validResults);
+          if (results.length > 0) {
+            const toolMessage = {
+              role: 'tool',
+              content: results,
+            } as any;
+            await this.sessionManager.addMessage(sessionId, toolMessage);
+            currentHistory.push(toolMessage);
+          }
 
-          } finally {
-            if (toolResults.length > 0) {
-              const toolMessage = {
-                role: 'tool',
-                content: toolResults,
-              } as any;
-              await sessionManager.addMessage(sessionId, toolMessage);
-              currentHistory.push(toolMessage);
-            }
-            
-            const completedIds = new Set(toolResults.map(r => r.toolCallId));
-            const missingResults = pendingToolCalls
-              .filter(tc => !completedIds.has(tc.toolCallId))
-              .map(tc => ({
-                type: 'tool-result',
-                toolCallId: tc.toolCallId,
-                toolName: tc.toolName,
-                result: "Error: Task interrupted or aborted before execution.",
-                isError: true
-              }));
-
-            if (missingResults.length > 0) {
-              console.warn(`[Agent] Filling ${missingResults.length} missing tool results due to interruption.`);
-              const missingMsg = {
-                role: 'tool',
-                content: missingResults
-              } as any;
-              await sessionManager.addMessage(sessionId, missingMsg);
-              currentHistory.push(missingMsg);
-            }
+          if (missing.length > 0) {
+            console.warn(`[Agent] Filling ${missing.length} missing tool results due to interruption.`);
+            const missingMsg = {
+              role: 'tool',
+              content: missing
+            } as any;
+            await this.sessionManager.addMessage(sessionId, missingMsg);
+            currentHistory.push(missingMsg);
           }
         } else if (currentOutputHadHallucination || currentOutputHasDirective || intentMismatch) {
           console.log(`[Agent] Iteration ${iteration}: Hallucination, premature directive or intent mismatch detected. Retrying with correction...`);
@@ -639,7 +581,7 @@ export class AgentLoop {
               role: 'user',
               content: '[系统纠偏] 你声称已发送或生成了内容，但你没有调用任何工具。请务必调用相应的工具来完成操作，不要只是描述要做什么。',
             } as any;
-            await sessionManager.addMessage(sessionId, correctionMsg);
+            await this.sessionManager.addMessage(sessionId, correctionMsg);
             currentHistory.push(correctionMsg);
           }
         } else {
@@ -725,12 +667,13 @@ export class AgentLoop {
     const channel = message.metadata?.originChannel || message.source || parsedChannel || 'cli';
     const chatId = message.metadata?.originChatId || message.metadata?.fromUser || parsedChatId || 'default';
 
-    const context = await buildContext(this.config, channel, chatId);
+    const contextBuilder = new ContextBuilder(this.config);
+    await contextBuilder.initialize();
+    const systemPrompt = await contextBuilder.buildSystemPrompt(channel, chatId);
 
     console.log(`[Agent] Processing message from ${message.source} (Target: ${message.target || 'all'}) in session ${sessionId}`);
 
-    const { tools, initPromise } = await createTools({
-      config: this.config,
+    const { tools, initPromise } = this.toolRegistry.getTools({
       subagentManager: this.subagentManager,
       memoryStore: this.memoryStore,
       sessionManager: this.sessionManager,
@@ -746,23 +689,8 @@ export class AgentLoop {
 
     let history = this.sessionManager.getHistory(sessionId);
 
-    const modelId = this.config.agents.defaults.model;
-    if (!isVisionModel(modelId)) {
-      history = history.map(msg => {
-        if (msg.role === 'tool') return msg;
-        if (Array.isArray(msg.content)) {
-          const textParts = msg.content
-            .filter((part: any) => part.type === 'text')
-            .map((part: any) => (part as any).text)
-            .join('\n');
-          return { ...msg, content: textParts || '[图片]' } as CoreMessage;
-        }
-        return msg;
-      });
-    }
-
     try {
-      await this.runAgentLoop(sessionId, history, tools, context, channel, chatId, message, abortSignal);
+      await this.runAgentLoop(sessionId, history, tools, contextBuilder, systemPrompt, channel, chatId, message, abortSignal);
     } catch (error: any) {
       let userFriendlyError = error.message;
       if (userFriendlyError.includes('JSON parsing failed') && userFriendlyError.includes('Text:')) {
@@ -777,24 +705,10 @@ export class AgentLoop {
       console.error(`[Agent] Error processing message: ${userFriendlyError}`);
 
       if (error.message?.includes('Image input not supported') || error.message?.includes('multimodal')) {
-        console.warn('[Agent] Model reported image support issue. Stripping images and retrying...');
+        console.warn('[Agent] Model reported image support issue. Retrying with text only...');
         
         try {
-          let history = this.sessionManager.getHistory(sessionId);
-          history = history.map(msg => {
-            if (msg.role === 'tool') return msg;
-            if (Array.isArray(msg.content)) {
-              const textParts = msg.content
-                .filter((part: any) => part.type === 'text')
-                .map((part: any) => (part as any).text)
-                .join('\n');
-              return { ...msg, content: textParts || '[图片]' } as CoreMessage;
-            }
-            return msg;
-          });
-          
-          // Reuse runAgentLoop for retry!
-          await this.runAgentLoop(sessionId, history, tools, context, channel, chatId, message, abortSignal);
+          await this.runAgentLoop(sessionId, history, tools, contextBuilder, systemPrompt, channel, chatId, message, abortSignal, true);
           return;
         } catch (retryError: any) {
           console.error(`[Agent] Retry failed: ${retryError.message}`);

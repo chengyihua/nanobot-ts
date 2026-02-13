@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { generateText, CoreMessage, LanguageModelV1 } from 'ai';
 import { MessageBus } from './bus.js';
-import { createTools } from '../tools/index.js';
+import { ToolRegistry } from './tool-registry.js';
 import { Config } from './config.js';
 
 /**
@@ -15,18 +15,21 @@ export class SubagentManager {
   private workspace: string;
   private bus: MessageBus;
   private config: Config;
+  private toolRegistry: ToolRegistry;
   private runningTasks: Map<string, Promise<void>> = new Map();
 
   constructor(
     model: LanguageModelV1,
     workspace: string,
     bus: MessageBus,
-    config: Config
+    config: Config,
+    toolRegistry: ToolRegistry
   ) {
     this.model = model;
     this.workspace = workspace;
     this.bus = bus;
     this.config = config;
+    this.toolRegistry = toolRegistry;
   }
 
   /**
@@ -67,8 +70,7 @@ export class SubagentManager {
 
     try {
       // Build subagent tools (no message tool, no spawn tool, no cron, no memory)
-      const { tools: subagentTools, initPromise } = createTools({
-        config: this.config,
+      const { tools: subagentTools, initPromise } = this.toolRegistry.getTools({
         originChannel: origin.channel,
         originChatId: origin.chatId,
       });

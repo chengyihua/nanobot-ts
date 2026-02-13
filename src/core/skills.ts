@@ -108,7 +108,7 @@ export class SkillsLoader {
     const allSkills = await this.listSkills(false);
     if (allSkills.length === 0) return '';
 
-    const lines = ['<skills>'];
+    const lines = [];
     for (const s of allSkills) {
       const parsed = await this.loadParsedSkill(s.name);
       if (!parsed) continue;
@@ -116,21 +116,20 @@ export class SkillsLoader {
       const metadata = parsed.metadata;
       const available = await this.checkRequirements(s.name); // Will use cache internally via loadParsedSkill
       const desc = metadata?.description || s.name;
-
-      lines.push(`  <skill available="${available}">`);
-      lines.push(`    <name>${s.name}</name>`);
-      lines.push(`    <description>${desc}</description>`);
-      lines.push(`    <location>${s.path}</location>`);
+      const status = available ? 'Available' : 'Unavailable (Missing Requirements)';
+      
+      lines.push(`### ${s.name} [${status}]`);
+      lines.push(`- **Description**: ${desc}`);
+      lines.push(`- **Location**: ${s.path}`);
       
       if (!available) {
         const missing = await this.getMissingRequirements(s.name);
         if (missing) {
-          lines.push(`    <requires>${missing}</requires>`);
+          lines.push(`- **Missing Requirements**: ${missing}`);
         }
       }
-      lines.push('  </skill>');
+      lines.push(''); // Empty line for spacing
     }
-    lines.push('</skills>');
 
     return lines.join('\n');
   }
