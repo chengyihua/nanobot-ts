@@ -33,7 +33,7 @@ An ultra-lightweight, extensible personal AI assistant framework built with Type
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/nanobot-ts.git
+   git clone https://github.com/chengyihua/nanobot-ts.git
    cd nanobot-ts
    ```
 
@@ -142,7 +142,7 @@ MIT
 
 1. 克隆仓库:
    ```bash
-   git clone https://github.com/yourusername/nanobot-ts.git
+   git clone https://github.com/chengyihua/nanobot-ts.git
    cd nanobot-ts
    ```
 
