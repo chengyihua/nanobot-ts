@@ -678,45 +678,18 @@ export class AgentLoop {
                  header += `: \`${fname}\``;
               }
 
-              let body = '';
+              let status = '✅ **Success**';
               const res = r.result;
               
-              if (typeof res === 'string') {
-                const content = res.length > 500 ? res.substring(0, 500) + '... (已截断)' : res;
-                body = `\`\`\`text\n${content}\n\`\`\``;
-              } else if (res && typeof res === 'object') {
-                if ('stdout' in res || 'stderr' in res) {
-                   const stdout = (res.stdout || '').trim();
-                   const stderr = (res.stderr || '').trim();
-                   
-                   if (stderr) {
-                     const content = stderr.length > 500 ? stderr.substring(0, 500) + '... (已截断)' : stderr;
-                     body = `❌ **错误:**\n\`\`\`text\n${content}\n\`\`\``;
-                   } else if (stdout) {
-                     const lines = stdout.split('\n');
-                     let content = stdout;
-                     let suffix = '';
-                     if (lines.length > 10) {
-                        content = lines.slice(0, 10).join('\n');
-                        suffix = `\n...(剩余 ${lines.length - 10} 行)`;
-                     }
-                     if (content.length > 500) {
-                        content = content.substring(0, 500) + '...';
-                     }
-                     body = `📄 **输出:**\n\`\`\`text\n${content}\n\`\`\`${suffix}`;
-                   } else {
-                     body = '✅ **执行成功** (无输出)';
-                   }
-                } else {
-                   const jsonStr = JSON.stringify(res, null, 2);
-                   const content = jsonStr.length > 500 ? jsonStr.substring(0, 500) + '...' : jsonStr;
-                   body = `\`\`\`json\n${content}\n\`\`\``;
-                }
-              } else {
-                body = String(res);
+              if (r.isError) {
+                status = '❌ **Failed**';
+              } else if (typeof res === 'string' && res.startsWith('Error:')) {
+                status = '❌ **Failed**';
+              } else if (res && typeof res === 'object' && 'exitCode' in res && res.exitCode !== 0) {
+                status = '❌ **Failed**';
               }
               
-              return `${header}\n${body}`;
+              return `${header}\n${status}`;
             }).join('\n\n');
 
             console.log(`[Agent] Sending tool result update:\n${toolOutput}`);
