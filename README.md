@@ -90,14 +90,14 @@ For high-availability or distributed deployments, you can run the Gateway and Ag
 Handles HTTP requests, Webhooks, and Cron scheduling.
 ```bash
 # Start Gateway only, disable internal agent loop, use Redis
-npm run start -- gateway --no-agent --redis
+nanobot gateway --no-agent --redis
 ```
 
 **2. Start Agent Worker (Brain)**
 Handles AI reasoning, tool execution, and heavy processing.
 ```bash
 # Start Agent in daemon mode, use Redis
-npm run start -- agent --daemon --redis
+nanobot agent --daemon --redis
 ```
 
 **Features in Split Mode:**
@@ -227,14 +227,14 @@ pnpm start
 负责处理 HTTP 请求、Webhook 回调和 Cron 定时任务调度。
 ```bash
 # 仅启动网关，禁用内部 Agent 循环，连接 Redis
-npm run start -- gateway --no-agent --redis
+nanobot gateway --no-agent --redis
 ```
 
 **2. 启动 Agent Worker (大脑)**
 负责 AI 推理、工具执行和耗时任务处理。
 ```bash
 # 以守护进程模式启动 Agent，连接 Redis
-npm run start -- agent --daemon --redis
+nanobot agent --daemon --redis
 ```
 
 **分离模式特性：**
