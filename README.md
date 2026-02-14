@@ -70,14 +70,19 @@ An ultra-lightweight, extensible personal AI assistant framework built with Type
 ### Interactive CLI Mode
 Start the agent in your terminal to chat directly:
 ```bash
+# Development
 pnpm dev
+
+# Production
+nanobot agent
 ```
 
 ### Production Build
 Build the project for production:
 ```bash
 pnpm build
-pnpm start
+npm link # Register 'nanobot' command globally
+nanobot gateway # Start Gateway (Default mode)
 ```
 
 ### Advanced Deployment (Split Mode)
@@ -207,14 +212,19 @@ MIT
 ### 交互式 CLI 模式
 在终端启动 Agent 直接对话:
 ```bash
+# 开发环境
 pnpm dev
+
+# 生产环境
+nanobot agent
 ```
 
 ### 生产环境构建
 编译项目用于生产环境:
 ```bash
 pnpm build
-pnpm start
+npm link # 注册 'nanobot' 全局命令
+nanobot gateway # 启动 Gateway (默认模式)
 ```
 
 ### 高级部署（分离模式）

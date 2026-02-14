@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Ultra-lightweight personal AI assistant in TypeScript",
   "main": "dist/index.js",
+  "bin": {
+    "nanobot": "dist/index.js"
+  },
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
