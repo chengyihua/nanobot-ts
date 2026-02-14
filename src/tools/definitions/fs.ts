@@ -3,12 +3,7 @@ import { z } from 'zod';
 import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
-import { PDFParse } from 'pdf-parse';
-import * as XLSX from 'xlsx';
 import { ToolOptions } from '../types.js';
-
-const readFileXLSX = (XLSX as any).readFile || (XLSX as any).default?.readFile;
-const utilsXLSX = (XLSX as any).utils || (XLSX as any).default?.utils;
 
 export const createFsTools = (options: ToolOptions, checkPath: (p: string) => string) => ({
   readFile: tool({
@@ -29,12 +24,16 @@ export const createFsTools = (options: ToolOptions, checkPath: (p: string) => st
         let content = '';
         
         if (ext === '.pdf') {
+          const { PDFParse } = await import('pdf-parse');
           const dataBuffer = await fs.readFile(fullPath);
           const parser = new PDFParse({ data: dataBuffer });
           const result = await parser.getText();
           content = result.text;
           await parser.destroy();
         } else if (ext === '.xlsx' || ext === '.xls') {
+          const XLSX = await import('xlsx');
+          const readFileXLSX = (XLSX as any).readFile || (XLSX as any).default?.readFile;
+          const utilsXLSX = (XLSX as any).utils || (XLSX as any).default?.utils;
           if (typeof readFileXLSX !== 'function') {
             throw new Error('XLSX.readFile is not a function. Check module loading.');
           }

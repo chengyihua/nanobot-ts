@@ -3,6 +3,118 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { LanguageModelV1 } from 'ai';
 import { Config } from '../core/config.js';
 import { ProviderSpec } from './types.js';
+import nodeFetch from 'node-fetch';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import { SocksProxyAgent } from 'socks-proxy-agent';
+
+// Helper to determine proxy and create fetch implementation
+export const createProxyFetch = (config: Config) => {
+  const proxyUrl = config.channels?.wecom?.proxy || 
+                   process.env.HTTPS_PROXY || 
+                   process.env.https_proxy || 
+                   process.env.ALL_PROXY || 
+                   process.env.all_proxy;
+  
+  if (proxyUrl) {
+    console.log(`[Registry] Using proxy: ${proxyUrl}`);
+    const agent = proxyUrl.startsWith('socks') 
+      ? new SocksProxyAgent(proxyUrl) 
+      : new HttpsProxyAgent(proxyUrl);
+      
+    return async (url: any, init: any) => {
+      const requestId = Math.random().toString(36).substring(7);
+      console.log(`[Registry:${requestId}] Fetching URL via proxy: ${url}`);
+      // console.log(`[Registry:${requestId}] Headers:`, JSON.stringify(init?.headers));
+      
+      try {
+        // Set a default timeout of 120s (2 minutes) for slow proxies/models
+        const timeout = init?.timeout || 120000;
+        const options = { ...init, agent, timeout };
+        
+        console.log(`[Registry:${requestId}] calling nodeFetch with timeout ${timeout}ms...`);
+        const response = await nodeFetch(url, options);
+        console.log(`[Registry:${requestId}] Fetch completed: ${url} (Status: ${response.status})`);
+        
+        // Wrap the response.json() and response.text() to log when body is read
+        const originalJson = response.json.bind(response);
+        response.json = async () => {
+            console.log(`[Registry:${requestId}] Reading JSON body...`);
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Body read timeout')), 60000));
+            const data = await Promise.race([originalJson(), timeoutPromise]);
+            console.log(`[Registry:${requestId}] JSON body read (${JSON.stringify(data).length} chars)`);
+            return data;
+        };
+        
+        // Also wrap text() just in case
+        const originalText = response.text.bind(response);
+        response.text = async () => {
+            console.log(`[Registry:${requestId}] Reading text body...`);
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Body read timeout')), 60000));
+            const data: any = await Promise.race([originalText(), timeoutPromise]);
+            console.log(`[Registry:${requestId}] Text body read (${data.length} chars)`);
+            return data as string;
+        };
+
+        return response;
+      } catch (error: any) {
+        if (error.type === 'request-timeout' || error.message.includes('timeout')) {
+             console.error(`[Registry:${requestId}] Fetch timed out after ${init?.timeout || 120000}ms for ${url}`);
+        }
+        console.error(`[Registry:${requestId}] Fetch error for ${url}:`, error.message);
+        throw error;
+      }
+    };
+  }
+  
+  // No proxy configured, but we still want the timeout and logging wrapper!
+  // Otherwise default fetch has no timeout and we can't debug body reads.
+  console.log('[Registry] No proxy configured, using default fetch with wrappers.');
+  
+  return async (url: any, init: any) => {
+    const requestId = Math.random().toString(36).substring(7);
+    console.log(`[Registry:${requestId}] Fetching URL (direct): ${url}`);
+    
+    try {
+      const timeout = init?.timeout || 120000;
+      // const controller = new AbortController();
+      // const timeoutId = setTimeout(() => controller.abort(), timeout);
+      // const signal = init?.signal ? anySignal([init.signal, controller.signal]) : controller.signal; 
+      // Note: node-fetch supports 'timeout' option directly, simpler than AbortController
+      
+      const options = { ...init, timeout };
+      
+      console.log(`[Registry:${requestId}] calling nodeFetch with timeout ${timeout}ms...`);
+      const response = await nodeFetch(url, options);
+      console.log(`[Registry:${requestId}] Fetch completed: ${url} (Status: ${response.status})`);
+      
+      const originalJson = response.json.bind(response);
+      response.json = async () => {
+          console.log(`[Registry:${requestId}] Reading JSON body...`);
+          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Body read timeout')), 60000));
+          const data = await Promise.race([originalJson(), timeoutPromise]);
+          console.log(`[Registry:${requestId}] JSON body read (${JSON.stringify(data).length} chars)`);
+          return data;
+      };
+      
+      const originalText = response.text.bind(response);
+      response.text = async () => {
+          console.log(`[Registry:${requestId}] Reading text body...`);
+          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Body read timeout')), 60000));
+          const data: any = await Promise.race([originalText(), timeoutPromise]);
+          console.log(`[Registry:${requestId}] Text body read (${data.length} chars)`);
+          return data as string;
+      };
+
+      return response;
+    } catch (error: any) {
+      if (error.type === 'request-timeout' || error.message.includes('timeout')) {
+           console.error(`[Registry:${requestId}] Fetch timed out after ${init?.timeout || 120000}ms for ${url}`);
+      }
+      console.error(`[Registry:${requestId}] Fetch error for ${url}:`, error.message);
+      throw error;
+    }
+  };
+};
 
 // Helper to create an OpenAI-compatible provider factory
 const createOpenAICompatible = (
@@ -15,10 +127,13 @@ const createOpenAICompatible = (
     const apiKey = providerConfig?.api_key || (apiKeyEnvVar ? process.env[apiKeyEnvVar] : undefined) || '';
     const baseURL = providerConfig?.api_base || defaultBaseURL;
     
+    const fetchImplementation = createProxyFetch(config);
+
     const provider = createOpenAI({
       apiKey,
       baseURL,
       headers: providerConfig?.extra_headers,
+      fetch: fetchImplementation as any,
     });
 
     // Strip prefix if present (e.g. "deepseek:deepseek-chat" -> "deepseek-chat")
@@ -39,9 +154,12 @@ export const PROVIDERS: ProviderSpec[] = [
       const anthropicConfig = config.providers.anthropic;
       const apiKey = anthropicConfig.api_key || process.env.ANTHROPIC_API_KEY || '';
       
+      const fetchImplementation = createProxyFetch(config);
+
       const provider = createAnthropic({
         apiKey,
         headers: anthropicConfig.extra_headers,
+        fetch: fetchImplementation as any,
       });
       return provider(modelId);
     }

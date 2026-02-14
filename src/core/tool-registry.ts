@@ -21,9 +21,11 @@ import { createSystemTools } from '../tools/definitions/system.js';
 import { createWebTools } from '../tools/definitions/web.js';
 import { createAgentTools } from '../tools/definitions/agent.js';
 import { createMemoryTools } from '../tools/definitions/memory.js';
+import { createLogger } from '../utils/logger.js';
 
 export class ToolRegistry {
   private config: Config;
+  private log = createLogger('tool-registry');
   private mcpTools: Record<string, any> = {};
   private mcpClients: Record<string, { client: Client, transport: StdioClientTransport, serverConfig: any }> = {};
   private pluginTools: Record<string, any> = {};
@@ -41,7 +43,7 @@ export class ToolRegistry {
 
     const cleanup = async () => {
       for (const name in this.mcpClients) {
-        console.log(`[MCP] Closing connection for server ${name}...`);
+        this.log.info({ server: name }, 'Closing MCP connection');
         try {
           await this.mcpClients[name].transport.close();
         } catch (e) {}
@@ -62,7 +64,7 @@ export class ToolRegistry {
 
   public async close() {
     for (const name in this.mcpClients) {
-      console.log(`[MCP] Closing connection for server ${name}...`);
+      this.log.info({ server: name }, 'Closing MCP connection');
       try {
         await this.mcpClients[name].transport.close();
       } catch (e) {}
@@ -85,11 +87,9 @@ export class ToolRegistry {
     if (workspacePath) {
       try {
         const loader = new PluginLoader(workspacePath);
-        // We pass empty options here just to satisfy the interface if needed, 
-        // or we might need to adjust PluginLoader to not require options if it only needs config
         this.pluginTools = await loader.loadPlugins({ config: this.config });
       } catch (e) {
-        console.error('[Tools] Failed to load plugins:', e);
+        this.log.warn({ err: e }, 'Failed to load plugins');
       }
     }
   }
@@ -107,7 +107,7 @@ export class ToolRegistry {
       const newServers = mcpConfig.servers.filter((s: any) => !this.mcpClients[s.name]);
       if (newServers.length === 0) return;
 
-      console.log(`[MCP] Found ${newServers.length} new servers to connect...`);
+      this.log.info({ count: newServers.length }, 'Found MCP servers to connect');
 
       const connectToServer = async (server: any) => {
         if (this.mcpClients[server.name]) return;
@@ -123,7 +123,7 @@ export class ToolRegistry {
             env.PORT = String(server.port);
           }
 
-          console.log(`[MCP] Connecting to server: ${server.name}...`);
+          this.log.info({ server: server.name }, 'Connecting to MCP server');
           const transport = new StdioClientTransport({
             command: server.command,
             args: server.args,
@@ -139,7 +139,7 @@ export class ToolRegistry {
           await client.connect(transport);
           
           transport.onclose = () => {
-            console.warn(`[MCP] Connection closed for server ${server.name}. Attempting to reconnect in 5s...`);
+            this.log.warn({ server: server.name }, 'MCP connection closed; will retry in 5s');
             delete this.mcpClients[server.name];
             setTimeout(() => connectToServer(server), 5000);
           };
@@ -181,9 +181,9 @@ export class ToolRegistry {
           }
           
           this.mcpClients[server.name] = { client, transport, serverConfig: server };
-          console.log(`[MCP] Registered ${tools.length} tools from ${server.name}`);
+          this.log.info({ server: server.name, tools: tools.length }, 'Registered MCP tools');
         } catch (error) {
-          console.error(`[MCP] Failed to connect to server ${server.name}:`, error);
+          this.log.error({ server: server.name, err: error }, 'Failed to connect MCP server');
           setTimeout(() => connectToServer(server), 10000);
         }
       };
@@ -192,7 +192,7 @@ export class ToolRegistry {
         await connectToServer(server);
       }
     } catch (error) {
-      console.error(`[MCP] Failed to load MCP config:`, error);
+      this.log.error({ err: error }, 'Failed to load MCP config');
     }
   }
 

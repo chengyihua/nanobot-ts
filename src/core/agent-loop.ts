@@ -44,9 +44,20 @@ export class AgentLoop {
       const msg = history[i];
       
       if (msg.role === 'assistant') {
-        const toolCalls = Array.isArray(msg.content) 
-          ? msg.content.filter((c: any) => (c as any).type === 'tool-call')
-          : [];
+        let toolCalls: any[] = [];
+        
+        if (Array.isArray(msg.content)) {
+          toolCalls = msg.content.filter((c: any) => (c as any).type === 'tool-call');
+        } else if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+          // Normalize OpenAI format to Vercel AI SDK format for consistent processing
+          toolCalls = msg.tool_calls.map((tc: any) => ({
+             type: 'tool-call',
+             toolCallId: tc.id,
+             toolName: tc.function.name,
+             args: typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments
+          }));
+        }
+
         const hasToolCalls = toolCalls.length > 0;
 
         if (hasToolCalls) {
@@ -70,21 +81,50 @@ export class AgentLoop {
             result.push(msg);
           } else {
             // 最终发送给 LLM 时，如果没有 tool 结果，为了保持连贯性，我们尝试填充一个占位结果
-            const toolNames = toolCalls.map((tc: any) => tc.toolName).join(', ');
-            console.warn(`[Agent] Found incomplete assistant tool-call [${toolNames}] at index ${i}. Filling placeholder to preserve memory.`);
+            // 但是如果这是最后一条消息（即刚刚生成了 tool call 但还没执行），我们不能填充，而是应该保留它
+            // 以便 LLM 知道它刚才想调用什么（或者被 context builder 处理）
+            // 实际上，如果最后一条是 assistant tool call，那么我们应该把这个 tool call 删除，或者填充错误信息
+            // 否则 LLM 会报错 "insufficient tool messages"
             
-            result.push(msg);
-            const placeholderResults = toolCalls.map((tc: any) => ({
-              type: 'tool-result',
-              toolCallId: tc.toolCallId,
-              toolName: tc.toolName,
-              result: "Error: Result lost or skipped in previous turn.",
-              isError: true
-            }));
-            result.push({
-              role: 'tool',
-              content: placeholderResults
-            });
+            // 检查这是否是历史记录中的最后一条消息
+            const isLastMessage = i === history.length - 1;
+            
+            if (isLastMessage) {
+                 // 如果是最后一条，且我们正在准备发给 LLM，说明上一轮意外中断了。
+                 // 我们必须填充一个错误结果，告诉 LLM 上一次调用失败了，请重试或继续。
+                 const toolNames = toolCalls.map((tc: any) => tc.toolName).join(', ');
+                 console.warn(`[Agent] Found interrupted last assistant tool-call [${toolNames}] at index ${i}. Filling error result to recover.`);
+                 
+                 result.push(msg);
+                 const placeholderResults = toolCalls.map((tc: any) => ({
+                   type: 'tool-result',
+                   toolCallId: tc.toolCallId,
+                   toolName: tc.toolName,
+                   result: "System Error: The previous tool execution was interrupted or timed out. Please retry if necessary.",
+                   isError: true
+                 }));
+                 result.push({
+                   role: 'tool',
+                   content: placeholderResults
+                 });
+            } else {
+                // 如果不是最后一条，中间断层了，同样需要填充
+                const toolNames = toolCalls.map((tc: any) => tc.toolName).join(', ');
+                console.warn(`[Agent] Found incomplete assistant tool-call [${toolNames}] at index ${i}. Filling placeholder to preserve memory.`);
+                
+                result.push(msg);
+                const placeholderResults = toolCalls.map((tc: any) => ({
+                  type: 'tool-result',
+                  toolCallId: tc.toolCallId,
+                  toolName: tc.toolName,
+                  result: "Error: Result lost or skipped in previous turn.",
+                  isError: true
+                }));
+                result.push({
+                  role: 'tool',
+                  content: placeholderResults
+                });
+            }
           }
         } else {
           result.push(msg);
@@ -92,7 +132,10 @@ export class AgentLoop {
       } else if (msg.role === 'tool') {
         // 确保 tool 消息前面有配对的 assistant
         const lastMsg = result[result.length - 1];
-        const lastHasTC = lastMsg && lastMsg.role === 'assistant' && Array.isArray(lastMsg.content) && lastMsg.content.some((c: any) => (c as any).type === 'tool-call');
+        const lastHasTC = lastMsg && lastMsg.role === 'assistant' && (
+            (Array.isArray(lastMsg.content) && lastMsg.content.some((c: any) => (c as any).type === 'tool-call')) ||
+            (lastMsg.tool_calls && Array.isArray(lastMsg.tool_calls) && lastMsg.tool_calls.length > 0)
+        );
         if (lastHasTC) {
           result.push(msg);
         } else {
@@ -115,19 +158,25 @@ export class AgentLoop {
     const toolResults: any[] = [];
     const pendingToolCalls = [...toolCalls];
 
+    console.log(`[Agent] Preparing to execute ${toolCalls.length} tools: ${toolCalls.map(tc => tc.toolName).join(', ')}`);
+
     // Parallel execution logic
     const toolPromises = toolCalls.map(async (toolCall: any) => {
       if (abortSignal?.aborted) return null;
       
-      console.log(`[Agent] Tool Call: ${toolCall.toolName}`);
+      console.log(`[Agent] Starting Tool Call: ${toolCall.toolName}`);
       const tool = (tools as any)[toolCall.toolName];
       if (tool) {
         try {
+          const startTime = Date.now();
           const toolResult = await tool.execute(toolCall.args, { 
             toolCallId: toolCall.toolCallId, 
             messages: currentHistory,
             abortSignal: abortSignal 
           });
+          const duration = Date.now() - startTime;
+          console.log(`[Agent] Finished Tool Call: ${toolCall.toolName} (${duration}ms)`);
+          
           return {
             type: 'tool-result',
             toolCallId: toolCall.toolCallId,
@@ -135,7 +184,7 @@ export class AgentLoop {
             result: toolResult,
           };
         } catch (err: any) {
-          console.error(`[Agent] Tool execution error: ${err.message}`);
+          console.error(`[Agent] Tool execution error for ${toolCall.toolName}: ${err.message}`);
           return {
             type: 'tool-result',
             toolCallId: toolCall.toolCallId,
@@ -177,6 +226,16 @@ export class AgentLoop {
   public async start() {
     console.log('[Agent] Loop started. Waiting for messages...');
     
+    // Cleanup stale sessions to control disk usage
+    try {
+      const removed = sessionManager.cleanup(30);
+      if (removed > 0) {
+        console.log(`[Agent] Cleaned ${removed} old session(s).`);
+      }
+    } catch (e) {
+      console.warn('[Agent] Session cleanup skipped:', (e as any)?.message);
+    }
+
     // Initialize Tool Registry (load MCP, plugins, etc.)
     await this.toolRegistry.initialize();
 
@@ -465,6 +524,19 @@ export class AgentLoop {
     let result;
     let pendingToolCalls: any[] = [];
 
+    // Create a specific controller for this request to handle timeout
+    const requestController = new AbortController();
+    const timeoutId = setTimeout(() => {
+        console.warn(`[Agent] Request timed out at iteration ${iteration}`);
+        requestController.abort();
+    }, 180000); // 3 minutes timeout
+
+    // Link user abort signal to request controller
+    const onUserAbort = () => requestController.abort();
+    if (abortSignal) {
+        abortSignal.addEventListener('abort', onUserAbort);
+    }
+
     try {
       result = await generateText({
         model,
@@ -475,7 +547,7 @@ export class AgentLoop {
             toolChoice,
             maxSteps: 1, 
             temperature: this.config.agents.defaults.temperature,
-            abortSignal: abortSignal,
+            abortSignal: requestController.signal,
           });
           
           if (result.toolCalls && result.toolCalls.length > 0) {
@@ -484,12 +556,17 @@ export class AgentLoop {
         } catch (err: any) {
           if (err.name === 'AbortError' || err.message?.includes('aborted')) {
             console.error(`[Agent] LLM call aborted at iteration ${iteration}`);
-            finalContent = "任务已被中止。";
+            finalContent = "任务已被中止（或超时）。";
           } else {
             console.error(`[Agent] LLM call error at iteration ${iteration}:`, err.message);
             finalContent = `抱歉，我在处理任务时遇到了错误：${err.message}`;
           }
           break;
+        } finally {
+            clearTimeout(timeoutId);
+            if (abortSignal) {
+                abortSignal.removeEventListener('abort', onUserAbort);
+            }
         }
 
         console.log(`[Agent] Iteration ${iteration} result:`, {
@@ -523,8 +600,24 @@ export class AgentLoop {
 
         if (pureText) {
           if (result.toolCalls && result.toolCalls.length > 0) {
-            if (accumulatedText) accumulatedText += '\n\n';
-            accumulatedText += pureText;
+            // Streaming behavior: Send intermediate text immediately instead of accumulating
+            console.log(`[Agent] Sending intermediate text: ${pureText.substring(0, 50)}...`);
+            bus.publish({
+              id: Math.random().toString(36).substring(7),
+              source: 'agent',
+              target: channel,
+              content: pureText,
+              type: 'text',
+              timestamp: Date.now(),
+              metadata: { 
+                ...message.metadata, 
+                sessionId,
+                to: message.metadata?.to || chatId
+              },
+            });
+            // Do not accumulate text to avoid duplication in final response
+            // if (accumulatedText) accumulatedText += '\n\n';
+            // accumulatedText += pureText;
           } else {
             summaryText = pureText;
           }
@@ -570,6 +663,77 @@ export class AgentLoop {
           allToolResults.push(...results);
 
           if (results.length > 0) {
+            // Streaming behavior: Send tool execution results immediately
+            const toolOutput = results.map(r => {
+              const originalCall = result.toolCalls?.find((tc: any) => tc.toolCallId === r.toolCallId);
+              const args = originalCall ? (originalCall.args as any) : {};
+              
+              let header = `**🔨 ${r.toolName}**`;
+              if (r.toolName === 'runCommand' && args.command) {
+                const cmd = args.command;
+                const truncatedCmd = cmd.length > 50 ? cmd.substring(0, 47) + '...' : cmd;
+                header += `: \`${truncatedCmd}\``;
+              } else if ((r.toolName === 'readFile' || r.toolName === 'read_file') && args.file_path) {
+                 const fname = args.file_path.split('/').pop();
+                 header += `: \`${fname}\``;
+              }
+
+              let body = '';
+              const res = r.result;
+              
+              if (typeof res === 'string') {
+                const content = res.length > 500 ? res.substring(0, 500) + '... (已截断)' : res;
+                body = `\`\`\`text\n${content}\n\`\`\``;
+              } else if (res && typeof res === 'object') {
+                if ('stdout' in res || 'stderr' in res) {
+                   const stdout = (res.stdout || '').trim();
+                   const stderr = (res.stderr || '').trim();
+                   
+                   if (stderr) {
+                     const content = stderr.length > 500 ? stderr.substring(0, 500) + '... (已截断)' : stderr;
+                     body = `❌ **错误:**\n\`\`\`text\n${content}\n\`\`\``;
+                   } else if (stdout) {
+                     const lines = stdout.split('\n');
+                     let content = stdout;
+                     let suffix = '';
+                     if (lines.length > 10) {
+                        content = lines.slice(0, 10).join('\n');
+                        suffix = `\n...(剩余 ${lines.length - 10} 行)`;
+                     }
+                     if (content.length > 500) {
+                        content = content.substring(0, 500) + '...';
+                     }
+                     body = `📄 **输出:**\n\`\`\`text\n${content}\n\`\`\`${suffix}`;
+                   } else {
+                     body = '✅ **执行成功** (无输出)';
+                   }
+                } else {
+                   const jsonStr = JSON.stringify(res, null, 2);
+                   const content = jsonStr.length > 500 ? jsonStr.substring(0, 500) + '...' : jsonStr;
+                   body = `\`\`\`json\n${content}\n\`\`\``;
+                }
+              } else {
+                body = String(res);
+              }
+              
+              return `${header}\n${body}`;
+            }).join('\n\n');
+
+            console.log(`[Agent] Sending tool result update:\n${toolOutput}`);
+            bus.publish({
+              id: Math.random().toString(36).substring(7),
+              source: 'agent',
+              target: channel,
+              content: toolOutput,
+              type: 'text',
+              timestamp: Date.now(),
+              metadata: { 
+                ...message.metadata, 
+                sessionId,
+                to: message.metadata?.to || chatId
+              },
+            });
+
             const toolMessage = {
               role: 'tool',
               content: results,

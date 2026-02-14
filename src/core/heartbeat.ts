@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 import path from 'path';
 import { Config, getWorkspacePath } from './config.js';
 import { bus } from './bus.js';
+import { createLogger } from '../utils/logger.js';
 
 const HEARTBEAT_PROMPT = `Read HEARTBEAT.md in your workspace (if it exists).
 Follow any instructions or tasks listed there.
@@ -43,6 +44,7 @@ export class HeartbeatService {
   private enabled: boolean;
   private running: boolean = false;
   private timer: NodeJS.Timeout | null = null;
+  private log = createLogger('heartbeat');
 
   constructor(config: Config) {
     this.config = config;
@@ -58,14 +60,14 @@ export class HeartbeatService {
 
   public async start() {
     if (!this.enabled) {
-      console.log('[Heartbeat] Service disabled in config.');
+      this.log.info('Service disabled in config.');
       return;
     }
 
     if (this.running) return;
     
     this.running = true;
-    console.log(`[Heartbeat] Service started (every ${this.intervalS}s)`);
+    this.log.info({ interval_s: this.intervalS }, 'Service started');
     this._runLoop();
   }
 
@@ -75,7 +77,7 @@ export class HeartbeatService {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    console.log('[Heartbeat] Service stopped.');
+    this.log.info('Service stopped.');
   }
 
   private async _runLoop() {
@@ -102,11 +104,23 @@ export class HeartbeatService {
   private async tick() {
     try {
       const content = await this.readHeartbeatFile();
+      if (this.isSnoozed(content)) {
+        return;
+      }
+
+      await this.cleanupUploads(7);
+
+      const actionable = this.countActionable(content);
       if (isHeartbeatEmpty(content)) {
         return;
       }
 
-      console.log('[Heartbeat] Found actionable tasks in HEARTBEAT.md, waking up agent...');
+      const MAX_TASKS = 50;
+      if (actionable > MAX_TASKS) {
+        this.log.warn({ actionable }, `Heartbeat has ${actionable} tasks; consider pruning HEARTBEAT.md`);
+      }
+
+      this.log.info('Found actionable tasks in HEARTBEAT.md, waking up agent...');
 
       bus.publish({
         id: Math.random().toString(36).substring(7),
@@ -119,7 +133,52 @@ export class HeartbeatService {
         },
       });
     } catch (error: any) {
-      console.error('[Heartbeat] Error during tick:', error.message);
+      this.log.error({ err: error }, 'Error during tick');
+    }
+  }
+
+  // Skip heartbeat if file contains SNOOZE_UNTIL: ISO string or SNOOZE_MINUTES: N
+  private isSnoozed(content: string | null): boolean {
+    if (!content) return false;
+    const lines = content.split('\n').map(l => l.trim());
+    const untilLine = lines.find(l => l.toUpperCase().startsWith('SNOOZE_UNTIL:'));
+    if (untilLine) {
+      const ts = untilLine.split(':').slice(1).join(':').trim();
+      const until = Date.parse(ts);
+      if (!isNaN(until) && Date.now() < until) return true;
+    }
+    const minutesLine = lines.find(l => l.toUpperCase().startsWith('SNOOZE_MINUTES:'));
+    if (minutesLine) {
+      const minutes = parseInt(minutesLine.split(':')[1]);
+      if (!isNaN(minutes)) {
+        const fileMtime = fs.statSync(this.heartbeatFile).mtimeMs;
+        if (Date.now() - fileMtime < minutes * 60 * 1000) return true;
+      }
+    }
+    return false;
+  }
+
+  // Remove uploads older than retentionDays to prevent disk bloat
+  private async cleanupUploads(retentionDays = 7) {
+    try {
+      const workspace = getWorkspacePath(this.config);
+      const uploadsDir = path.join(workspace, 'uploads');
+      if (!(await fs.pathExists(uploadsDir))) return;
+      const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+      const files = await fs.readdir(uploadsDir);
+      for (const f of files) {
+        const fp = path.join(uploadsDir, f);
+        try {
+          const stat = await fs.stat(fp);
+          if (stat.isFile() && stat.mtimeMs < cutoff) {
+            await fs.remove(fp);
+          }
+        } catch (e) {
+          console.warn('[Heartbeat] Failed to inspect upload file:', fp, (e as any)?.message);
+        }
+      }
+    } catch (error: any) {
+      console.warn('[Heartbeat] Upload cleanup skipped:', error.message);
     }
   }
 
@@ -130,8 +189,21 @@ export class HeartbeatService {
       }
       return await fs.readFile(this.heartbeatFile, 'utf-8');
     } catch (error: any) {
-      console.warn(`[Heartbeat] Failed to read ${this.heartbeatFile}: ${error.message}`);
+      this.log.warn({ err: error, file: this.heartbeatFile }, 'Failed to read heartbeat file');
       return null;
     }
+  }
+
+  private countActionable(content: string | null): number {
+    if (!content) return 0;
+    let count = 0;
+    for (const raw of content.split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#') || line.startsWith('<!--')) continue;
+      if (/^[-*]\s*\[x\]/i.test(line)) continue;
+      if (/^[-*]\s*\[\s*\]\s*$/.test(line)) continue;
+      count++;
+    }
+    return count;
   }
 }

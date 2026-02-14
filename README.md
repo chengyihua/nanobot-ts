@@ -83,6 +83,9 @@ pnpm start
 ### WeCom Integration
 Enable WeCom in `.env` to connect the bot to Enterprise WeChat.
 
+### QQ Integration
+Nanobot supports QQ via OneBot v11 protocol. See [QQ Setup Guide](docs/QQ_SETUP.md) for detailed instructions on how to use NapCatQQ or LLOneBot.
+
 ## 🛠️ Development
 
 ### Project Structure

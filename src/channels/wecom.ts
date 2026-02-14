@@ -2,6 +2,8 @@ import express from 'express';
 import { parseStringPromise } from 'xml2js';
 import { decrypt, getSignature } from '@wecom/crypto';
 import axios from 'axios';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import { SocksProxyAgent } from 'socks-proxy-agent';
 import fs from 'fs';
 import path from 'path';
 import FormData from 'form-data';
@@ -20,27 +22,58 @@ export class WeComChannel {
     this.config = config;
   }
 
-  public async start() {
+  public async start(app?: express.Application) {
     const wecom = this.config.channels?.wecom;
     if (!wecom || !wecom.enabled) {
       console.log('[WeCom] Channel disabled.');
       return;
     }
+    
+    if (wecom.proxy) {
+        console.log(`[WeCom] Using proxy: ${wecom.proxy}`);
+    }
 
+    const server = app || this.app;
     const port = wecom.port || process.env.WECOM_PORT || 3000;
 
-    // 全局请求日志中间件
-    this.app.use((req, _res, next) => {
-      console.log(`[WeCom] Incoming Request: ${req.method} ${req.url}`);
-      console.log(`[WeCom] Headers: ${JSON.stringify(req.headers)}`);
-      next();
+    // In-memory rate limit state (per-process)
+    const rateHits = new Map<string, { count: number; ts: number }>();
+    const RATE_WINDOW_MS = 60_000;
+    const RATE_LIMIT = 120;
+
+    // Middleware to handle raw body for decryption (apply to shared app or local app)
+    // Safe to add globally as it only matches XML content types
+    server.use(express.text({ type: ['*/xml', 'text/xml', 'application/xml'], limit: '200kb' }));
+
+    // Lightweight logging + timeout + rate limit + optional IP allowlist
+    server.use((req, res, next) => {
+        console.log(`[WeCom] ${req.method} ${req.url}`);
+        req.setTimeout(10_000);
+
+        const ip = (req.ip || '').replace('::ffff:', '') || 'unknown';
+        const now = Date.now();
+        const rec = rateHits.get(ip) || { count: 0, ts: now };
+        if (now - rec.ts > RATE_WINDOW_MS) {
+            rec.count = 0;
+            rec.ts = now;
+        }
+        rec.count += 1;
+        rateHits.set(ip, rec);
+        if (rec.count > RATE_LIMIT) {
+            return res.status(429).send('Too Many Requests');
+        }
+
+        const allowIps = wecom.allow_ips || [];
+        if (allowIps.length > 0 && !isIpAllowed(ip, allowIps)) {
+            console.warn(`[WeCom] Rejected request from disallowed IP: ${ip}`);
+            return res.status(403).send('Forbidden');
+        }
+
+        next();
     });
 
-    // Middleware to handle raw body for decryption
-    this.app.use(express.text({ type: ['*/xml', 'text/xml', 'application/xml'] }));
-
     // URL Verification (GET)
-    this.app.get(['/', '/wecom'], (req, res) => {
+    server.get(['/', '/wecom'], (req, res) => {
       console.log(`[WeCom] Received GET request for verification on path: ${req.path}`);
       const { msg_signature, timestamp, nonce, echostr } = req.query;
       
@@ -66,7 +99,7 @@ export class WeComChannel {
     });
 
     // Message Receiving (POST)
-    this.app.post(['/', '/wecom'], async (req, res) => {
+    server.post(['/', '/wecom'], async (req, res) => {
       console.log(`[WeCom] Received POST request (message) on path: ${req.path}`);
       const { msg_signature, timestamp, nonce } = req.query;
       const xmlData = req.body;
@@ -95,6 +128,11 @@ export class WeComChannel {
         const msg = msgResult.xml;
 
         const fromUser = msg.FromUserName[0];
+        const toUser = msg.ToUserName?.[0];
+        if (wecom.corpid && toUser && String(toUser) !== wecom.corpid) {
+          console.warn(`[WeCom] CorpId mismatch: expected ${wecom.corpid}, got ${toUser}`);
+          return res.status(403).send('Forbidden');
+        }
         const msgType = msg.MsgType[0];
         let content = msg.Content?.[0] || '';
         let localPath: string | undefined;
@@ -183,13 +221,19 @@ export class WeComChannel {
       }
     });
 
-    this.app.listen(port, () => {
-      console.log(`[WeCom] Callback server listening on port ${port}`);
-    });
+    if (!app) {
+        this.app.listen(port, () => {
+        console.log(`[WeCom] Callback server listening on port ${port}`);
+        });
+    } else {
+        console.log(`✅ WeCom channel attached to Gateway path: /, /wecom`);
+    }
 
     // Listen for agent responses
     bus.onMessage(async (message) => {
-      if (message.source === 'agent' && (message.target === 'wecom' || !message.target)) {
+      if (['agent', 'subagent'].includes(message.source) && (message.target === 'wecom' || !message.target)) {
+        console.log(`[WeCom] Received message from ${message.source} (Target: ${message.target || 'any'})`);
+        
         const toUser = message.metadata?.fromUser || message.metadata?.to || message.metadata?.originChatId;
         if (!toUser) {
           console.warn('[WeCom] No recipient found in message metadata:', message.metadata);
@@ -197,6 +241,8 @@ export class WeComChannel {
         }
 
         let content = message.content;
+        console.log(`[WeCom] Processing content for user ${toUser}: ${content.substring(0, 50)}...`);
+
         // 优化正则表达式：支持行首空格，增加 m 标志支持多行匹配
         const fileRegex = /^\s*(?:SEND_FILE|SEND_IMAGE|SEND_VOICE):\s*([^\n\r]+)/gim;
         
@@ -250,12 +296,22 @@ export class WeComChannel {
 
     console.log('[WeCom] Fetching fresh access token...');
     try {
-      const response = await axios.get('https://qyapi.weixin.qq.com/cgi-bin/gettoken', {
+      const config: any = {
         params: {
           corpid: wecom.corpid,
           corpsecret: wecom.corpsecret,
         },
-      });
+      };
+
+      if (wecom.proxy) {
+        const agent = wecom.proxy.startsWith('socks') 
+            ? new SocksProxyAgent(wecom.proxy) 
+            : new HttpsProxyAgent(wecom.proxy);
+        config.httpsAgent = agent;
+        config.proxy = false; 
+      }
+
+      const response = await axios.get('https://qyapi.weixin.qq.com/cgi-bin/gettoken', config);
 
       if (response.data.errcode === 0) {
         console.log('[WeCom] Access token fetched successfully');
@@ -277,13 +333,24 @@ export class WeComChannel {
     if (!token) return '下载失败 (无Token)';
 
     try {
-      const response = await axios.get(`https://qyapi.weixin.qq.com/cgi-bin/media/get`, {
+      const wecom = this.config.channels?.wecom;
+      const config: any = {
         params: {
           access_token: token,
           media_id: mediaId,
         },
         responseType: 'arraybuffer',
-      });
+      };
+
+      if (wecom?.proxy) {
+        const agent = wecom.proxy.startsWith('socks') 
+            ? new SocksProxyAgent(wecom.proxy) 
+            : new HttpsProxyAgent(wecom.proxy);
+        config.httpsAgent = agent;
+        config.proxy = false; 
+      }
+
+      const response = await axios.get(`https://qyapi.weixin.qq.com/cgi-bin/media/get`, config);
 
       const workspacePath = getWorkspacePath(this.config);
       const uploadsDir = path.join(workspacePath, 'uploads');
@@ -376,7 +443,16 @@ export class WeComChannel {
         payload.text = { content };
       }
 
-      const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, payload);
+      const config: any = {};
+      if (wecom.proxy) {
+        const agent = wecom.proxy.startsWith('socks') 
+            ? new SocksProxyAgent(wecom.proxy) 
+            : new HttpsProxyAgent(wecom.proxy);
+        config.httpsAgent = agent;
+        config.proxy = false; 
+      }
+
+      const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, payload, config);
       
       if (response.data.errcode !== 0) {
         console.error(`[WeCom] Send error (${msgtype}):`, response.data.errcode, response.data.errmsg);
@@ -403,7 +479,17 @@ export class WeComChannel {
         [msgtype]: { content },
         safe: 0,
       };
-      const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, payload);
+
+      const config: any = {};
+      if (wecom.proxy) {
+        const agent = wecom.proxy.startsWith('socks') 
+            ? new SocksProxyAgent(wecom.proxy) 
+            : new HttpsProxyAgent(wecom.proxy);
+        config.httpsAgent = agent;
+        config.proxy = false; 
+      }
+
+      const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, payload, config);
       return response.data.errcode === 0;
     } catch (error: any) {
       console.error(`[WeCom] Fallback send error (${msgtype}):`, error.message);
@@ -516,4 +602,15 @@ export class WeComChannel {
 
     return false;
   }
+}
+
+function isIpAllowed(ip: string, allowList: string[]): boolean {
+  if (!ip) return false;
+  for (const entry of allowList) {
+    if (!entry) continue;
+    if (ip === entry) return true;
+    const normalized = entry.endsWith('*') ? entry.slice(0, -1) : entry;
+    if (normalized && ip.startsWith(normalized)) return true;
+  }
+  return false;
 }

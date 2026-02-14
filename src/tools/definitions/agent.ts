@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ToolOptions } from '../types.js';
 
 export const createAgentTools = (options: ToolOptions) => {
-  const { subagentManager } = options;
+  const { subagentManager, originChannel, originChatId } = options;
 
   return {
     spawnSubagent: tool({
@@ -19,7 +19,11 @@ export const createAgentTools = (options: ToolOptions) => {
         }
         
         try {
-          const taskId = await subagentManager.spawn(name, goal, context);
+          const fullTask = context ? `${goal}\n\nContext: ${context}` : goal;
+          const channel = originChannel || 'cli';
+          const chatId = originChatId || 'direct';
+          
+          const taskId = await subagentManager.spawn(fullTask, name, channel, chatId);
           return { success: true, taskId, message: `Subagent ${name} started. Task ID: ${taskId}. Use checkSubagentStatus to monitor progress.` };
         } catch (error: any) {
           return { error: error.message };

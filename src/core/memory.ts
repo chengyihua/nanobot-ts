@@ -44,16 +44,24 @@ export class MemoryStore {
   public async appendToday(content: string): Promise<void> {
     const todayFile = this.getTodayFile();
     const exists = await fs.pathExists(todayFile);
+    const MAX_CHARS = 20000; // soft cap per day
 
-    let contentToWrite = content;
+    let merged: string;
     if (!exists) {
-      // Add header for new day
-      contentToWrite = `# ${todayDate()}\n\n${content}`;
+      merged = `# ${todayDate()}\n\n${content}`;
     } else {
-      contentToWrite = `\n${content}`;
+      const existing = await fs.readFile(todayFile, 'utf-8');
+      merged = `${existing}\n${content}`;
     }
 
-    await fs.appendFile(todayFile, contentToWrite, 'utf-8');
+    if (merged.length > MAX_CHARS) {
+      const headerEnd = merged.indexOf('\n\n');
+      const header = headerEnd > -1 ? merged.slice(0, headerEnd) : '';
+      const body = merged.slice(-MAX_CHARS);
+      merged = header ? `${header}\n\n${body}` : body;
+    }
+
+    await fs.writeFile(todayFile, merged, 'utf-8');
   }
 
   /**

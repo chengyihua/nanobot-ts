@@ -26,6 +26,26 @@ export const WhatsAppConfigSchema = z.object({
   allow_from: z.array(z.string()).default([]),
 });
 
+// QQ Official
+export const QQOfficialConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  appid: z.string().default(''),
+  token: z.string().default(''),
+  secret: z.string().default(''),
+  sandbox: z.boolean().default(false),
+  intents: z.array(z.string()).default([
+    'GUILD_MESSAGES', 
+    'DIRECT_MESSAGE', 
+    'GROUP_AT_MESSAGE_CREATE', 
+    'C2C_MESSAGE_CREATE'
+  ]),
+  webhook: z.object({
+    enabled: z.boolean().default(false),
+    port: z.number().default(8080),
+    path: z.string().default('/qq-official-webhook'),
+  }).default({}),
+});
+
 // Telegram
 export const TelegramConfigSchema = z.object({
   enabled: z.boolean().default(false),
@@ -94,8 +114,46 @@ export const WeComConfigSchema = z.object({
   agentid: z.number().optional(),
   token: z.string().default(''),
   encoding_aes_key: z.string().default(''),
+  allow_from: z.preprocess((val) => {
+    if (typeof val === 'string') {
+      try {
+        return JSON.parse(val);
+      } catch {
+        return val.split(',').map(s => s.trim()).filter(Boolean);
+      }
+    }
+    return val;
+  }, z.array(z.string())).default([]),
+  // Optional IP allowlist for callback source validation
+  allow_ips: z.preprocess((val) => {
+    if (typeof val === 'string') {
+      try {
+        return JSON.parse(val);
+      } catch {
+        return val.split(',').map(s => s.trim()).filter(Boolean);
+      }
+    }
+    return val;
+  }, z.array(z.string())).default([]),
+  port: z.number().default(8080),
+  proxy: z.string().optional(),
+});
+
+// QQ
+export const QQConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  port: z.number().default(3001),
+  api_url: z.string().default('http://127.0.0.1:5700'),
+  access_token: z.string().optional(),
   allow_from: z.array(z.string()).default([]),
-  port: z.number().default(3000),
+});
+
+// WeChat (iPad Protocol via Wechaty)
+export const WeChatiPadConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  puppet: z.string().default('wechaty-puppet-padlocal'), // or wechaty-puppet-wechat4u, etc.
+  token: z.string().optional(), // Token for puppet-padlocal
+  allow_from: z.array(z.string()).default([]),
 });
 
 export const ChannelsConfigSchema = z.object({
@@ -106,11 +164,14 @@ export const ChannelsConfigSchema = z.object({
   dingtalk: DingTalkConfigSchema.default({}),
   email: EmailConfigSchema.default({}),
   wecom: WeComConfigSchema.default({}),
+  qq: QQConfigSchema.default({}),
+  qq_official: QQOfficialConfigSchema.default({}),
+  wechat_ipad: WeChatiPadConfigSchema.default({}),
 });
 
 // Agent Defaults
 export const AgentDefaultsSchema = z.object({
-  workspace: z.string().default(path.join(PROJECT_ROOT, 'workspace')),
+  workspace: z.string().default('workspace'),
   model: z.string().default('anthropic/claude-3-5-sonnet-20240620'),
   max_tokens: z.number().default(8192),
   temperature: z.number().default(0.7),
@@ -152,7 +213,7 @@ export const ProvidersConfigSchema = z.object({
 // Gateway
 export const GatewayConfigSchema = z.object({
   host: z.string().default('0.0.0.0'),
-  port: z.number().default(18790),
+  port: z.number().default(8080),
 });
 
 // Tools
@@ -177,7 +238,8 @@ export const HeartbeatConfigSchema = z.object({
 export const ToolsConfigSchema = z.object({
   web: WebToolsConfigSchema.default({}),
   exec: ExecToolConfigSchema.default({}),
-  restrict_to_workspace: z.boolean().default(false),
+  // Safer默认值：限制文件访问在工作区内，需显式关闭才会全盘访问
+  restrict_to_workspace: z.boolean().default(true),
 });
 
 // Behavior (Refactored hardcoded values)
@@ -283,9 +345,13 @@ export async function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): Prom
   if (!result.success) {
     console.error('Configuration validation failed:', JSON.stringify(result.error.format(), null, 2));
     console.warn('Proceeding with partial configuration and defaults where validation failed.');
-    // Attempt to return the merged config anyway, casting to Config
-    // This allows valid parts (like model choice) to work even if wecom.agentid is broken
-    return mergedConfig as Config;
+    
+    // Create a full default config
+    const defaultConfig = ConfigSchema.parse({});
+    // Merge user's partial config into defaults to ensure structure is valid
+    const safeConfig = mergeDeep(defaultConfig, mergedConfig);
+    
+    return safeConfig as Config;
   }
 
   return result.data;

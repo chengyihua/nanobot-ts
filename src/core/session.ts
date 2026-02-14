@@ -412,6 +412,26 @@ export class SessionManager {
     session.updatedAt = new Date().toISOString();
     this.saveToDisk(session);
   }
+
+  /**
+   * Remove sessions older than maxAgeDays (default 30)
+   */
+  public cleanup(maxAgeDays = 30): number {
+    if (!fs.existsSync(this.sessionsDir)) return 0;
+    const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+    let removed = 0;
+    for (const file of fs.readdirSync(this.sessionsDir).filter(f => f.endsWith('.jsonl'))) {
+      const filePath = path.join(this.sessionsDir, file);
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.mtimeMs < cutoff) {
+          fs.unlinkSync(filePath);
+          removed++;
+        }
+      } catch (_) { /* ignore single-file errors */ }
+    }
+    return removed;
+  }
 }
 
 export const sessionManager = new SessionManager();

@@ -8,7 +8,14 @@ import { bus } from './core/bus.js';
 import { AgentLoop } from './core/agent-loop.js';
 import { CronService } from './cron/service.js';
 import { WeComChannel } from './channels/wecom.js';
+import { QQChannel } from './channels/qq.js';
+import { QQOfficialChannel } from './channels/qq-official.js';
+import { WeChatiPadChannel } from './channels/wechat-ipad.js';
 import { HeartbeatService } from './core/heartbeat.js';
+import { createLogger } from './utils/logger.js';
+import { registerSessionsCommand } from './commands/sessions.js';
+
+const rootLog = createLogger('cli');
 
 const program = new Command();
 
@@ -16,6 +23,9 @@ program
   .name('nanobot')
   .description('Ultra-lightweight personal AI assistant in TypeScript')
   .version('0.1.0');
+
+// Register subcommands
+registerSessionsCommand(program);
 
 program
   .command('onboard')
@@ -43,6 +53,8 @@ program
     console.log('\n✅ Onboarding complete! You can now run "nanobot agent" or "nanobot gateway".');
   });
 
+import { Gateway } from './core/gateway.js';
+
 program
   .command('gateway')
   .description('Start the nanobot gateway (all services)')
@@ -50,13 +62,27 @@ program
   .action(async (options) => {
     const config = await loadConfig();
     const port = parseInt(options.port);
+    
+    // Override gateway port if provided
+    if (!config.gateway) config.gateway = { port: 8080, host: '0.0.0.0' };
+    config.gateway.port = port;
 
-    console.log(`🌐 Starting nanobot gateway on port ${port}...`);
+    rootLog.info({ port }, 'Starting nanobot gateway');
+
+    // Initialize Gateway Server
+    const gateway = new Gateway(config);
+    const app = gateway.getApp();
+
+    // Debug: optional request log (headers redacted)
+    app.use((req, _res, next) => {
+      rootLog.debug({ method: req.method, url: req.url, ip: req.ip }, 'gateway request');
+      next();
+    });
 
     // Initialize Cron Service
     const cronStorePath = getCronStorePath(config);
     const cron = new CronService(cronStorePath, async (job) => {
-      console.log(`[Cron] Triggering job: ${job.name}`);
+      rootLog.info({ job: job.id, name: job.name }, 'Cron triggered');
       bus.publish({
         id: Math.random().toString(36).substring(7),
         source: 'cron',
@@ -79,18 +105,41 @@ program
     const agent = new AgentLoop(config, cron);
     await agent.start();
 
+    if (config.channels.qq_official?.enabled) {
+      const qqOfficial = new QQOfficialChannel(config);
+      // Pass the shared gateway app to QQ Official Channel
+      await qqOfficial.start(app);
+      console.log('✅ QQ Official channel started');
+    }
+
     // Initialize Channels
     if (config.channels.wecom.enabled) {
       const wecom = new WeComChannel(config);
-      await wecom.start();
-      console.log('✅ WeCom channel started');
+      await wecom.start(app);
+      rootLog.info('WeCom channel started (Attached to Gateway)');
     }
+
+    if (config.channels.wechat_ipad.enabled) {
+      const wechatIpad = new WeChatiPadChannel(config);
+      await wechatIpad.start();
+      console.log('✅ WeChat iPad channel started');
+    }
+
+    if (config.channels.qq.enabled) {
+      const qq = new QQChannel(config);
+      await qq.start();
+      console.log('✅ QQ channel started');
+    }
+
+    // Start the Gateway Server
+    await gateway.start();
+
 
     // Initialize Heartbeat Service
     const heartbeat = new HeartbeatService(config);
     await heartbeat.start();
 
-    console.log('🚀 Gateway is running. Press Ctrl+C to stop.');
+    rootLog.info('Gateway is running. Press Ctrl+C to stop.');
 
     // Keep process alive
     process.on('SIGINT', () => {
@@ -142,10 +191,22 @@ program
 
     if (options.services) {
       // Initialize Channels
-      if (config.channels.wecom.enabled) {
+      if (config.channels?.wecom?.enabled) {
         const wecom = new WeComChannel(config);
         await wecom.start();
         console.log('✅ WeCom channel started');
+      }
+
+      if (config.channels?.qq?.enabled) {
+        const qq = new QQChannel(config);
+        await qq.start();
+        console.log('✅ QQ channel started');
+      }
+
+      if (config.channels?.qq_official?.enabled) {
+        const qqOfficial = new QQOfficialChannel(config);
+        await qqOfficial.start();
+        console.log('✅ QQ Official channel started');
       }
 
       // Initialize Heartbeat Service

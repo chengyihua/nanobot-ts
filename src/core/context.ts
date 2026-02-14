@@ -1,11 +1,15 @@
 import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import { Config, getWorkspacePath } from './config.js';
 import { SkillsLoader } from './skills.js';
 import { MemoryStore } from './memory.js';
 import { FILES, DIRS } from './constants.js';
 import { CoreMessage } from 'ai';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export interface Context {
   systemPrompt: string;
@@ -19,6 +23,8 @@ export class ContextBuilder {
   private workspacePath: string;
   private memoryStore: MemoryStore;
   private skillsLoader: SkillsLoader;
+  private bootstrapCache?: { value: string; mtimes: Record<string, number> };
+  private skillsCache?: { value: string; mtime: number };
 
   constructor(config: Config) {
     this.config = config;
@@ -128,13 +134,26 @@ ${restrictToWorkspace
   }
 
   private async loadBootstrapFiles(): Promise<string> {
+    const mtimes: Record<string, number> = {};
+    for (const filename of BOOTSTRAP_FILES) {
+      const filePath = path.join(this.workspacePath, filename);
+      if (await fs.pathExists(filePath)) {
+        const stat = await fs.stat(filePath);
+        mtimes[filename] = stat.mtimeMs;
+      }
+    }
+
+    if (this.bootstrapCache) {
+      const unchanged = Object.keys(mtimes).every((k) => this.bootstrapCache!.mtimes[k] === mtimes[k]);
+      if (unchanged) return this.bootstrapCache.value;
+    }
+
     const parts: string[] = [];
     for (const filename of BOOTSTRAP_FILES) {
       const filePath = path.join(this.workspacePath, filename);
       if (await fs.pathExists(filePath)) {
         let content = await fs.readFile(filePath, 'utf-8');
         
-        // Truncate large bootstrap files
         const MAX_FILE_CHARS = 10000;
         if (content.length > MAX_FILE_CHARS) {
           console.warn(`[Context] File ${filename} is too large (${content.length} chars), truncating...`);
@@ -143,7 +162,9 @@ ${restrictToWorkspace
         parts.push(`## ${filename}\n\n${content}`);
       }
     }
-    return parts.join('\n\n');
+    const value = parts.join('\n\n');
+    this.bootstrapCache = { value, mtimes };
+    return value;
   }
 
   private async loadMemoryContext(): Promise<string | null> {
@@ -168,9 +189,13 @@ ${restrictToWorkspace
       }
     }
 
-    // Available skills summary
-    const skillsSummary = await this.skillsLoader.buildSkillsSummary();
+    // Available skills summary with cache (based on skills directory mtime)
+    const skillsMtime = await this.getSkillsMtime();
+    let skillsSummary = this.skillsCache && this.skillsCache.mtime === skillsMtime
+      ? this.skillsCache.value
+      : await this.skillsLoader.buildSkillsSummary();
     if (skillsSummary) {
+      this.skillsCache = { value: skillsSummary, mtime: skillsMtime };
       parts.push(`# Available Skills (Native AI Skills)
 
 The following is a COMPLETE and AUTHORITATIVE list of skills you possess. 
@@ -183,6 +208,21 @@ ${skillsSummary}
 2. **HOW TO USE**: Use the summary above. ONLY read \`SKILL.md\` if you need syntax.
 `);
     }
+  }
+
+  private async getSkillsMtime(): Promise<number> {
+    const dirs = [
+      path.join(this.workspacePath, 'skills'),
+      path.resolve(__dirname, '../../skills'),
+    ];
+    let latest = 0;
+    for (const dir of dirs) {
+      if (await fs.pathExists(dir)) {
+        const stat = await fs.stat(dir);
+        latest = Math.max(latest, stat.mtimeMs);
+      }
+    }
+    return latest;
   }
 
   private getToolUsageRules(): string {

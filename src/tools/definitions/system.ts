@@ -14,6 +14,10 @@ export const createSystemTools = (options: ToolOptions, checkPath: (p: string) =
         cwd: z.string().optional().describe('Optional: working directory for the command'),
       }),
       execute: async ({ command, cwd }: { command: string; cwd?: string }, { abortSignal }: any = {}) => {
+        const danger = isDangerousCommand(command);
+        if (danger) {
+          return { error: `Command blocked for safety: ${danger}` };
+        }
         try {
           const targetCwd = cwd ? checkPath(cwd) : process.cwd();
           const { stdout, stderr } = await execa(command, { 
@@ -84,3 +88,20 @@ export const createSystemTools = (options: ToolOptions, checkPath: (p: string) =
     }),
   };
 };
+
+function isDangerousCommand(cmd: string): string | null {
+  const normalized = cmd.trim().toLowerCase();
+  const patterns: Array<{ re: RegExp; reason: string }> = [
+    { re: /\brm\s+-rf\s+\/\b/, reason: 'rm -rf / is destructive' },
+    { re: /\brm\s+-rf\s+--no-preserve-root\b/, reason: 'rm -rf --no-preserve-root is destructive' },
+    { re: /\brm\s+-rf\s+\*\b/, reason: 'rm -rf * is destructive' },
+    { re: /:?\(\)\s*{\s*:\s*\|\s*:\s*;\s*}\s*;/, reason: 'fork bomb detected' },
+    { re: /\bmkfs\w*\b/, reason: 'filesystem formatting command' },
+    { re: /\bdd\b.*\bof=\/dev\/sd/, reason: 'raw disk write detected' },
+    { re: /\bshutdown\b|\breboot\b|\bpoweroff\b/, reason: 'system shutdown/reboot' },
+  ];
+  for (const { re, reason } of patterns) {
+    if (re.test(normalized)) return reason;
+  }
+  return null;
+}

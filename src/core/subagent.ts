@@ -98,46 +98,39 @@ export class SubagentManager {
       });
 
       console.log(`[Subagent] [${taskId}] completed successfully`);
-      await this.announceResult(taskId, label, task, text, origin, 'ok');
 
-    } catch (error: any) {
-      console.error(`[Subagent] [${taskId}] failed:`, error.message);
-      await this.announceResult(taskId, label, task, `Error: ${error.message}`, origin, 'error');
+      // Notify completion
+      this.bus.publish({
+        id: crypto.randomUUID(),
+        source: 'subagent',
+        target: origin.channel, // Send back to origin channel
+        content: `✅ Subagent Task [${label}] Completed:\n\n${text}`,
+        type: 'text',
+        timestamp: Date.now(),
+        metadata: {
+            sessionId: `${origin.channel}:${origin.chatId}`, // Ensure it routes to correct session
+            to: origin.chatId, // Specific recipient
+            taskId
+        }
+      });
+
+    } catch (error) {
+      console.error(`[Subagent] [${taskId}] failed:`, error);
+      
+      this.bus.publish({
+        id: crypto.randomUUID(),
+        source: 'subagent',
+        target: origin.channel,
+        content: `❌ Subagent Task [${label}] Failed:\n\n${error instanceof Error ? error.message : String(error)}`,
+        type: 'text',
+        timestamp: Date.now(),
+        metadata: {
+            sessionId: `${origin.channel}:${origin.chatId}`,
+            to: origin.chatId,
+            taskId
+        }
+      });
     }
-  }
-
-  private async announceResult(
-    taskId: string,
-    label: string,
-    task: string,
-    result: string,
-    origin: { channel: string; chatId: string },
-    status: 'ok' | 'error'
-  ): Promise<void> {
-    const statusText = status === 'ok' ? 'completed successfully' : 'failed';
-    
-    const announceContent = `[Subagent '${label}' ${statusText}]
-
-Task: ${task}
-
-Result:
-${result}
-
-Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not mention technical details like "subagent" or task IDs.`;
-
-    // Inject as system message to trigger main agent
-    this.bus.publish({
-      id: crypto.randomUUID(),
-      source: 'system',
-      target: 'agent',
-      content: announceContent,
-      type: 'text',
-      timestamp: Date.now(),
-      metadata: {
-        sessionId: `${origin.channel}:${origin.chatId}`,
-        senderId: 'subagent',
-      },
-    });
   }
 
   private buildSubagentPrompt(task: string): string {

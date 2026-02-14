@@ -1,9 +1,7 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import axios from 'axios';
-import TurndownService from 'turndown';
-import { JSDOM } from 'jsdom';
-import { PDFParse } from 'pdf-parse';
+// heavy deps按需加载以减少冷启动
 import { ToolOptions } from '../types.js';
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36';
@@ -63,6 +61,7 @@ export const createWebTools = (options: ToolOptions) => {
               headers: { 'User-Agent': USER_AGENT },
             });
             const dataBuffer = Buffer.from(response.data);
+            const { PDFParse } = await import('pdf-parse');
             const parser = new PDFParse({ data: dataBuffer });
             const result = await parser.getText();
             await parser.destroy();
@@ -86,6 +85,8 @@ export const createWebTools = (options: ToolOptions) => {
           });
 
           const html = response.data;
+          const { JSDOM } = await import('jsdom');
+          const TurndownService = (await import('turndown')).default;
           const turndownService = new TurndownService({
             headingStyle: 'atx',
             codeBlockStyle: 'fenced',
