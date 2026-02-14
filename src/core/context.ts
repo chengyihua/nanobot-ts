@@ -260,14 +260,29 @@ ${skillsSummary}
     // We'll try to keep the most recent messages.
     
     const historyToUse = [...history];
-    const firstMsg = historyToUse.length > 0 ? historyToUse[0] : null;
+    let firstMsg = historyToUse.length > 0 ? historyToUse[0] : null;
+
+    // Only preserve the first message if it's a User or System message.
+    // If it's an Assistant message (especially with tool calls) or a Tool message, 
+    // it's likely part of a conversation flow that can be truncated if needed,
+    // and preserving it blindly might create orphans (e.g. Assistant without Tool).
+    if (firstMsg && (firstMsg.role === 'assistant' || firstMsg.role === 'tool')) {
+        firstMsg = null;
+    }
     
-    // If we have a first message, keep it. Then remove from index 1.
-    // If only 1 message, we can't really truncate much without losing the request.
+    // If we have a first message to preserve, keep it. Then remove from index 1.
+    // If not, we treat the whole history as truncatable.
     if (historyToUse.length <= 1) return historyToUse;
 
-    const remainingHistory = historyToUse.slice(1);
+    let remainingHistory: any[];
     
+    if (firstMsg) {
+      remainingHistory = historyToUse.slice(1);
+    } else {
+      remainingHistory = historyToUse;
+    }
+    
+    // Ensure we don't truncate down to nothing (keep at least 1 message in remaining)
     while (totalChars > MAX_HISTORY_CHARS && remainingHistory.length > 1) {
       const removed = remainingHistory.shift(); // Remove oldest
       if (removed) {
