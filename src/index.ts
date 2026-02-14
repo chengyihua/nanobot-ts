@@ -14,6 +14,7 @@ import { WeChatiPadChannel } from './channels/wechat-ipad.js';
 import { HeartbeatService } from './core/heartbeat.js';
 import { createLogger } from './utils/logger.js';
 import { registerSessionsCommand } from './commands/sessions.js';
+import { RedisTransportAdapter } from './core/bus-redis.js';
 
 const rootLog = createLogger('cli');
 
@@ -59,6 +60,8 @@ program
   .command('gateway')
   .description('Start the nanobot gateway (all services)')
   .option('-p, --port <number>', 'Gateway port', '8080')
+  .option('--no-agent', 'Run gateway only (no agent loop)')
+  .option('--redis', 'Use Redis message bus')
   .action(async (options) => {
     const config = await loadConfig();
     const port = parseInt(options.port);
@@ -66,6 +69,12 @@ program
     // Override gateway port if provided
     if (!config.gateway) config.gateway = { port: 8080, host: '0.0.0.0' };
     config.gateway.port = port;
+
+    if (options.redis) {
+      const redisAdapter = new RedisTransportAdapter(config);
+      await bus.setAdapter(redisAdapter);
+      console.log('🔗 Connected to Redis Message Bus');
+    }
 
     rootLog.info({ port }, 'Starting nanobot gateway');
 
@@ -99,11 +108,25 @@ program
       });
       return 'Message published to bus';
     });
+
+    // Listen for updates from agent
+    bus.onMessage((message) => {
+      if (message.metadata?.type === 'cron_update') {
+        rootLog.info('Received cron update notification, reloading...');
+        cron.reload();
+      }
+    });
+
     await cron.start();
 
     // Initialize Agent
-    const agent = new AgentLoop(config, cron);
-    await agent.start();
+    if (options.agent) {
+      const agent = new AgentLoop(config, cron);
+      await agent.start();
+      console.log('🤖 Agent loop started (Embedded)');
+    } else {
+      console.log('🚫 Agent loop disabled (Gateway only mode)');
+    }
 
     if (config.channels.qq_official?.enabled) {
       const qqOfficial = new QQOfficialChannel(config);
@@ -154,40 +177,79 @@ program
   .option('-s, --session <id>', 'Session ID', 'default')
   .option('-m, --message <text>', 'Single message to send')
   .option('--no-services', 'Run agent only without other services (channels, cron, etc.)')
+  .option('--daemon', 'Run as background worker (no CLI interaction)')
+  .option('--redis', 'Use Redis message bus')
   .action(async (options) => {
     const config = await loadConfig();
     
-    // Initialize Cron Service if not disabled
-    let cron;
-    if (options.services) {
-      const cronStorePath = getCronStorePath(config);
-      cron = new CronService(cronStorePath, async (job) => {
-        console.log(`[Cron] Triggering job: ${job.name}`);
+    if (options.redis) {
+      const redisAdapter = new RedisTransportAdapter(config);
+      await bus.setAdapter(redisAdapter);
+      console.log('🔗 Connected to Redis Message Bus');
+    }
+
+    // Initialize Cron Service (always needed for tools)
+    const cronStorePath = getCronStorePath(config);
+    const onCronUpdate = () => {
+      // Notify other processes (Gateway) about cron updates
+      if (options.redis || options.daemon) {
         bus.publish({
           id: Math.random().toString(36).substring(7),
-          source: 'cron',
-          content: job.payload.message,
+          source: 'agent',
+          target: 'gateway',
+          content: 'Cron store updated',
           type: 'text',
           timestamp: Date.now(),
-          metadata: { 
-            sessionId: job.id,
-            jobId: job.id,
-            deliver: job.payload.deliver,
-            channel: job.payload.channel,
-            to: job.payload.to,
-            // 确保 Agent 知道这是从哪个渠道触发的定时任务
-            originChannel: job.payload.channel,
-            originChatId: job.payload.to,
-          },
+          metadata: { type: 'cron_update' }
         });
-        return 'Message published to bus';
+      }
+    };
+
+    const cron = new CronService(cronStorePath, async (job) => {
+      console.log(`[Cron] Triggering job: ${job.name}`);
+      bus.publish({
+        id: Math.random().toString(36).substring(7),
+        source: 'cron',
+        content: job.payload.message,
+        type: 'text',
+        timestamp: Date.now(),
+        metadata: { 
+          sessionId: job.id,
+          jobId: job.id,
+          deliver: job.payload.deliver,
+          channel: job.payload.channel,
+          to: job.payload.to,
+          // 确保 Agent 知道这是从哪个渠道触发的定时任务
+          originChannel: job.payload.channel,
+          originChatId: job.payload.to,
+        },
       });
+      return 'Message published to bus';
+    }, onCronUpdate);
+
+    // Only start cron execution if we are NOT in daemon mode and NOT disabling services
+    if (options.services && !options.daemon) {
       await cron.start();
     }
 
     // Initialize Agent
     const agent = new AgentLoop(config, cron);
     await agent.start();
+
+    if (options.daemon) {
+      console.log('🤖 Agent Worker started (Daemon mode)');
+      console.log('Listening for messages on bus...');
+      
+      // Keep process alive
+      process.on('SIGINT', async () => {
+        console.log('\n👋 Shutting down agent worker...');
+        // agent.stop(); // If AgentLoop has stop method
+        process.exit(0);
+      });
+      
+      // Prevent function from exiting
+      return new Promise(() => {}); 
+    }
 
     if (options.services) {
       // Initialize Channels

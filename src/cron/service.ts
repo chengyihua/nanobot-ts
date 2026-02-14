@@ -39,14 +39,16 @@ export type JobCallback = (job: CronJob) => Promise<string | null>;
 export class CronService {
   private storePath: string;
   private onJob?: JobCallback;
+  private onUpdate?: () => void;
   private store: CronStore | null = null;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private loadingPromise: Promise<CronStore> | null = null;
 
-  constructor(storePath: string, onJob?: JobCallback) {
+  constructor(storePath: string, onJob?: JobCallback, onUpdate?: () => void) {
     this.storePath = storePath;
     this.onJob = onJob;
+    this.onUpdate = onUpdate;
   }
 
   private async loadStore(): Promise<CronStore> {
@@ -84,6 +86,20 @@ export class CronService {
     if (!this.store) return;
     await fs.ensureDir(path.dirname(this.storePath));
     await fs.writeJson(this.storePath, this.store, { spaces: 2 });
+    if (this.onUpdate) {
+      this.onUpdate();
+    }
+  }
+
+  public async reload(): Promise<void> {
+    console.log('[Cron] Reloading store from disk...');
+    this.store = null;
+    const store = await this.loadStore();
+    this.recomputeNextRuns();
+    if (this.running) {
+      this.armTimer();
+    }
+    console.log(`[Cron] Reload complete. Active jobs: ${store.jobs.length || 0}`);
   }
 
   public async start(): Promise<void> {

@@ -216,6 +216,14 @@ export const GatewayConfigSchema = z.object({
   port: z.number().default(8080),
 });
 
+// Redis
+export const RedisConfigSchema = z.object({
+  host: z.string().default('localhost'),
+  port: z.number().default(6379),
+  password: z.string().optional(),
+  db: z.number().default(0),
+});
+
 // Tools
 export const WebSearchConfigSchema = z.object({
   api_key: z.string().default(''),
@@ -253,6 +261,7 @@ export const ConfigSchema = z.object({
   channels: ChannelsConfigSchema.default({}),
   providers: ProvidersConfigSchema.default({}),
   gateway: GatewayConfigSchema.default({}),
+  redis: RedisConfigSchema.default({}),
   tools: ToolsConfigSchema.default({}),
   heartbeat: HeartbeatConfigSchema.default({}),
   behavior: BehaviorConfigSchema.default({}),

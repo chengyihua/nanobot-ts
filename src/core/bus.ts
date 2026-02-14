@@ -10,53 +10,42 @@ export interface Message {
   metadata?: Record<string, any>;
 }
 
-export class MessageBus extends EventEmitter {
-  private static instance: MessageBus;
+export interface TransportAdapter {
+  publish(message: Message): Promise<void>;
+  subscribe(handler: (message: Message) => void): void;
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+}
+
+export class MemoryTransportAdapter implements TransportAdapter {
   private inboundQueue: Message[] = [];
-  private processingInbound = false;
   private outboundQueue: Message[] = [];
+  private processingInbound = false;
   private processingOutbound = false;
+  private handler?: (message: Message) => void;
 
-  private constructor() {
-    super();
-    // Increase limit for many subscribers
-    this.setMaxListeners(100);
+  public async connect(): Promise<void> {
+    // No-op for memory
   }
 
-  public static getInstance(): MessageBus {
-    if (!MessageBus.instance) {
-      MessageBus.instance = new MessageBus();
-    }
-    return MessageBus.instance;
+  public async disconnect(): Promise<void> {
+    // No-op for memory
   }
 
-  /**
-   * Publish a message to the bus (inbound or outbound)
-   */
-  public publish(message: Message): void {
+  public subscribe(handler: (message: Message) => void): void {
+    this.handler = handler;
+  }
+
+  public async publish(message: Message): Promise<void> {
     if (message.source === 'agent') {
-      this.publishOutbound(message);
+      console.debug(`[Bus] Queueing outbound message for ${message.target || 'all'}`);
+      this.outboundQueue.push(message);
+      this.processQueue('outbound');
     } else {
-      this.publishInbound(message);
+      console.debug(`[Bus] Queueing inbound message from ${message.source}`);
+      this.inboundQueue.push(message);
+      this.processQueue('inbound');
     }
-  }
-
-  /**
-   * Publish a message from a channel to the agent
-   */
-  private publishInbound(message: Message): void {
-    console.debug(`[Bus] Queueing inbound message from ${message.source}`);
-    this.inboundQueue.push(message);
-    this.processQueue('inbound');
-  }
-
-  /**
-   * Publish a response from the agent to channels
-   */
-  private publishOutbound(message: Message): void {
-    console.debug(`[Bus] Queueing outbound message for ${message.target || 'all'}`);
-    this.outboundQueue.push(message);
-    this.processQueue('outbound');
   }
 
   private async processQueue(type: 'inbound' | 'outbound'): Promise<void> {
@@ -71,19 +60,13 @@ export class MessageBus extends EventEmitter {
     try {
       while (queue.length > 0) {
         const message = queue.shift();
-        if (message) {
+        if (message && this.handler) {
           console.debug(`[Bus] Dispatching ${type} message: ${message.content.substring(0, 50)}...`);
-          
           try {
-            this.emit('message', message);
-            if (message.target) {
-              this.emit(`message:${message.target}`, message);
-            }
+             this.handler(message);
           } catch (error) {
-            console.error(`[Bus] Error processing message ${message.id}:`, error);
+             console.error(`[Bus] Error processing message ${message.id}:`, error);
           }
-          
-          // Give a small breath to the event loop
           await new Promise(resolve => setImmediate(resolve));
         }
       }
@@ -91,6 +74,49 @@ export class MessageBus extends EventEmitter {
       if (type === 'inbound') this.processingInbound = false;
       else this.processingOutbound = false;
     }
+  }
+}
+
+export class MessageBus extends EventEmitter {
+  private static instance: MessageBus;
+  private adapter: TransportAdapter;
+
+  private constructor() {
+    super();
+    // Increase limit for many subscribers
+    this.setMaxListeners(100);
+    this.adapter = new MemoryTransportAdapter();
+    this.setupAdapter();
+  }
+
+  private setupAdapter() {
+    this.adapter.subscribe((message) => {
+      this.emit('message', message);
+      if (message.target) {
+        this.emit(`message:${message.target}`, message);
+      }
+    });
+  }
+
+  public static getInstance(): MessageBus {
+    if (!MessageBus.instance) {
+      MessageBus.instance = new MessageBus();
+    }
+    return MessageBus.instance;
+  }
+
+  public async setAdapter(adapter: TransportAdapter) {
+    await this.adapter.disconnect();
+    this.adapter = adapter;
+    this.setupAdapter();
+    await this.adapter.connect();
+  }
+
+  /**
+   * Publish a message to the bus (inbound or outbound)
+   */
+  public async publish(message: Message): Promise<void> {
+    await this.adapter.publish(message);
   }
 
   /**
@@ -105,14 +131,6 @@ export class MessageBus extends EventEmitter {
    */
   public onTargetedMessage(target: string, handler: (message: Message) => void): void {
     this.on(`message:${target}`, handler);
-  }
-
-  public get inboundSize(): number {
-    return this.inboundQueue.length;
-  }
-
-  public get outboundSize(): number {
-    return this.outboundQueue.length;
   }
 }
 
