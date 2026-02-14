@@ -80,6 +80,31 @@ pnpm build
 pnpm start
 ```
 
+### Advanced Deployment (Split Mode)
+For high-availability or distributed deployments, you can run the Gateway and Agent in separate processes using Redis as the message bus.
+
+**Prerequisites:**
+- Redis server running and accessible.
+
+**1. Start Gateway (Inbound/Outbound Interface)**
+Handles HTTP requests, Webhooks, and Cron scheduling.
+```bash
+# Start Gateway only, disable internal agent loop, use Redis
+npm run start -- gateway --no-agent --redis
+```
+
+**2. Start Agent Worker (Brain)**
+Handles AI reasoning, tool execution, and heavy processing.
+```bash
+# Start Agent in daemon mode, use Redis
+npm run start -- agent --daemon --redis
+```
+
+**Features in Split Mode:**
+- **Decoupled**: Restart Agent without dropping Gateway connections.
+- **Scalable**: Run multiple Agent workers (future support).
+- **Synchronized**: Cron jobs defined by the Agent are automatically synced to the Gateway.
+
 ### WeCom Integration
 Enable WeCom in `.env` to connect the bot to Enterprise WeChat.
 
@@ -191,6 +216,31 @@ pnpm dev
 pnpm build
 pnpm start
 ```
+
+### 高级部署（分离模式）
+为了实现高可用或分布式部署，您可以将 Gateway（网关）和 Agent（智能体）分离在不同的进程中运行，并使用 Redis 作为消息总线。
+
+**前置条件：**
+- 需运行 Redis 服务。
+
+**1. 启动 Gateway (出入口网关)**
+负责处理 HTTP 请求、Webhook 回调和 Cron 定时任务调度。
+```bash
+# 仅启动网关，禁用内部 Agent 循环，连接 Redis
+npm run start -- gateway --no-agent --redis
+```
+
+**2. 启动 Agent Worker (大脑)**
+负责 AI 推理、工具执行和耗时任务处理。
+```bash
+# 以守护进程模式启动 Agent，连接 Redis
+npm run start -- agent --daemon --redis
+```
+
+**分离模式特性：**
+- **解耦**: 重启 Agent 不会中断 Gateway 的长连接。
+- **扩展**: 支持运行多个 Agent Worker（未来支持负载均衡）。
+- **同步**: Agent 定义的 Cron 任务会自动同步到 Gateway 执行。
 
 ### 企业微信集成
 在 `.env` 中启用 WeCom 配置，即可将机器人连接到企业微信。
