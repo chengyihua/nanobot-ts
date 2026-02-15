@@ -46,6 +46,8 @@ export class PluginLoader {
             // Try index.js or index.ts
             if (await fs.pathExists(path.join(fullPath, 'index.js'))) {
                 entryPoint = path.join(fullPath, 'index.js');
+            } else if (await fs.pathExists(path.join(fullPath, 'index.ts'))) {
+                entryPoint = path.join(fullPath, 'index.ts');
             } else if (await fs.pathExists(path.join(fullPath, 'dist', 'index.js'))) {
                  entryPoint = path.join(fullPath, 'dist', 'index.js');
             }
