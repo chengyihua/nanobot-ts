@@ -579,13 +579,22 @@ export class WeComChannel {
     const mediaId = await this.uploadMedia(filePath, actualType);
     if (mediaId) {
       try {
+        const config: any = {};
+        if (wecom.proxy) {
+          const agent = wecom.proxy.startsWith('socks') 
+              ? new SocksProxyAgent(wecom.proxy) 
+              : new HttpsProxyAgent(wecom.proxy);
+          config.httpsAgent = agent;
+          config.proxy = false; 
+        }
+
         const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, {
           touser: toUser,
           msgtype: actualType,
           agentid: Number(wecom.agentid),
           [actualType]: { media_id: mediaId },
           safe: 0,
-        });
+        }, config);
         
         if (response.data.errcode === 0) return true;
         
@@ -601,13 +610,22 @@ export class WeComChannel {
       const fileMediaId = await this.uploadMedia(filePath, 'file');
       if (fileMediaId) {
         try {
+          const config: any = {};
+          if (wecom.proxy) {
+            const agent = wecom.proxy.startsWith('socks') 
+                ? new SocksProxyAgent(wecom.proxy) 
+                : new HttpsProxyAgent(wecom.proxy);
+            config.httpsAgent = agent;
+            config.proxy = false; 
+          }
+
           const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, {
             touser: toUser,
             msgtype: 'file',
             agentid: Number(wecom.agentid),
             file: { media_id: fileMediaId },
             safe: 0,
-          });
+          }, config);
           return response.data.errcode === 0;
         } catch (error: any) {
           console.error(`[WeCom] Send as file fallback error:`, error.message);
