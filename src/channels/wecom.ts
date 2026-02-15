@@ -535,9 +535,20 @@ export class WeComChannel {
       const form = new FormData();
       form.append('media', fs.createReadStream(absolutePath));
 
-      const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=${token}&type=${type}`, form, {
+      const wecom = this.config.channels?.wecom;
+      const config: any = {
         headers: form.getHeaders(),
-      });
+      };
+
+      if (wecom?.proxy) {
+        const agent = wecom.proxy.startsWith('socks') 
+            ? new SocksProxyAgent(wecom.proxy) 
+            : new HttpsProxyAgent(wecom.proxy);
+        config.httpsAgent = agent;
+        config.proxy = false; 
+      }
+
+      const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=${token}&type=${type}`, form, config);
 
       if (response.data.errcode !== 0) {
         console.error(`[WeCom] Upload error response:`, response.data);
