@@ -8,7 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import FormData from 'form-data';
 
-import { Config, getWorkspacePath } from '../core/config.js';
+import { Config, getWorkspacePath, PROJECT_ROOT } from '../core/config.js';
 import { bus } from '../core/bus.js';
 import { TranscriptionService } from '../core/transcription.js';
 
@@ -510,11 +510,15 @@ export class WeComChannel {
         const potentialPath1 = path.join(workspacePath, filePath);
         // 尝试从 uploads 目录查找（如果 Agent 只提供了文件名）
         const potentialPath2 = path.join(workspacePath, 'uploads', filePath);
+        // 尝试从项目根目录查找（兼容非工作区文件）
+        const potentialPath3 = path.join(PROJECT_ROOT, filePath);
 
         if (fs.existsSync(potentialPath1)) {
           absolutePath = potentialPath1;
         } else if (fs.existsSync(potentialPath2)) {
           absolutePath = potentialPath2;
+        } else if (fs.existsSync(potentialPath3)) {
+          absolutePath = potentialPath3;
         } else {
           // 保持原逻辑作为保底
           absolutePath = potentialPath1;
