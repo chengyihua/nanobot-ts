@@ -7,25 +7,37 @@ import { Plugin } from './plugin.js';
 export class PluginLoader {
   private workspace: string;
   private pluginsDir: string;
+  private skillsDir: string;
   private loadedPlugins: Map<string, Plugin> = new Map();
 
   constructor(workspace: string) {
     this.workspace = workspace;
     this.pluginsDir = path.join(workspace, DIRS.PLUGINS);
+    this.skillsDir = path.join(workspace, DIRS.SKILLS);
   }
 
   public async loadPlugins(options: ToolOptions): Promise<Record<string, any>> {
     const tools: Record<string, any> = {};
 
-    if (!(await fs.pathExists(this.pluginsDir))) {
-      return tools;
+    // 1. Load from plugins/ directory
+    if (await fs.pathExists(this.pluginsDir)) {
+      await this.loadPluginsFromDir(this.pluginsDir, tools, options);
     }
 
-    const items = await fs.readdir(this.pluginsDir);
+    // 2. Load from skills/ directory (if skill acts as a plugin)
+    if (await fs.pathExists(this.skillsDir)) {
+      await this.loadPluginsFromDir(this.skillsDir, tools, options);
+    }
+
+    return tools;
+  }
+
+  private async loadPluginsFromDir(dir: string, tools: Record<string, any>, options: ToolOptions) {
+    const items = await fs.readdir(dir);
     
     for (const item of items) {
       // Support both directory-based plugins (index.js/ts) and file-based plugins (.js)
-      const fullPath = path.join(this.pluginsDir, item);
+      const fullPath = path.join(dir, item);
       const stat = await fs.stat(fullPath);
       
       let entryPoint = '';
@@ -58,15 +70,17 @@ export class PluginLoader {
 
       if (entryPoint) {
         try {
-          console.log(`[PluginLoader] Loading plugin: ${item} from ${entryPoint}`);
           // Dynamic import
           const module = await import(entryPoint);
           const pluginFactory = module.default;
 
           if (typeof pluginFactory !== 'function' && typeof pluginFactory?.init !== 'function') {
-             console.warn(`[PluginLoader] Plugin ${item} does not export a valid factory function or Plugin object.`);
+             // Silently skip if it's just a random script or skill without plugin export
+             // Only warn if it looks like it *tried* to be a plugin but failed
              continue;
           }
+
+          console.log(`[PluginLoader] Loading plugin: ${item} from ${entryPoint}`);
 
           let plugin: Plugin;
           if (typeof pluginFactory === 'function') {
@@ -81,6 +95,11 @@ export class PluginLoader {
              continue; 
           }
 
+          if (this.loadedPlugins.has(plugin.name || item)) {
+            console.warn(`[PluginLoader] Plugin ${plugin.name || item} already loaded. Skipping duplicate.`);
+            continue;
+          }
+
           this.loadedPlugins.set(plugin.name || item, plugin);
           const pluginTools = await plugin.init(options);
           
@@ -88,11 +107,12 @@ export class PluginLoader {
           console.log(`[PluginLoader] Loaded ${Object.keys(pluginTools).length} tools from plugin ${plugin.name || item}`);
 
         } catch (error) {
-          console.error(`[PluginLoader] Failed to load plugin ${item}:`, error);
+          // Ignore errors from non-plugin files in skills directory to avoid noise
+          if (dir === this.pluginsDir) {
+             console.error(`[PluginLoader] Failed to load plugin ${item}:`, error);
+          }
         }
       }
     }
-
-    return tools;
   }
 }
