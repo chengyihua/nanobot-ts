@@ -2,8 +2,15 @@ import { tool } from 'ai';
 import { z } from 'zod';
 import fs from 'fs-extra';
 import path from 'path';
-import os from 'os';
 import { ToolOptions } from '../types.js';
+
+const truncateContent = (content: string, limit = 30000) => {
+  if (content.length <= limit) return content;
+  const head = content.slice(0, Math.floor(limit * 0.6));
+  const tail = content.slice(-Math.floor(limit * 0.3));
+  const skipped = content.length - head.length - tail.length;
+  return `${head}\n...\n${tail}\n[truncated ${skipped} chars of file content]`;
+};
 
 export const createFsTools = (options: ToolOptions, checkPath: (p: string) => string) => ({
   readFile: tool({
@@ -47,12 +54,8 @@ export const createFsTools = (options: ToolOptions, checkPath: (p: string) => st
           content = await fs.readFile(fullPath, 'utf-8');
         }
         
-        const MAX_READ_CHARS = 30000;
-        if (content.length > MAX_READ_CHARS) {
-          content = content.substring(0, MAX_READ_CHARS) + `\n\n... (content truncated). Total size: ${content.length} chars.`;
-        }
-        
-        return { content, totalChars: content.length };
+        const truncated = truncateContent(content, 30000);
+        return { content: truncated, totalChars: content.length };
       } catch (error: any) {
         return { error: error.message };
       }

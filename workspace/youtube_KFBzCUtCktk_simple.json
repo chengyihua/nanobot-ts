@@ -1,0 +1,16 @@
+{
+  "video_id": "KFBzCUtCktk",
+  "curl_result": {
+    "success": false,
+    "error": "curl超时"
+  },
+  "wget_result": {
+    "success": false,
+    "error": "Command '['wget', '-q', '-O', '-', 'https://www.youtube.com/watch?v=KFBzCUtCktk']' timed out after 30 seconds"
+  },
+  "summary": {
+    "title": null,
+    "description": null,
+    "has_data": false
+  }
+}

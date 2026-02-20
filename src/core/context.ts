@@ -5,8 +5,7 @@ import { fileURLToPath } from 'url';
 import { Config, getWorkspacePath } from './config.js';
 import { SkillsLoader } from './skills.js';
 import { MemoryStore } from './memory.js';
-import { FILES, DIRS } from './constants.js';
-import { CoreMessage } from 'ai';
+import { FILES } from './constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -191,7 +190,7 @@ ${restrictToWorkspace
 
     // Available skills summary with cache (based on skills directory mtime)
     const skillsMtime = await this.getSkillsMtime();
-    let skillsSummary = this.skillsCache && this.skillsCache.mtime === skillsMtime
+    const skillsSummary = this.skillsCache && this.skillsCache.mtime === skillsMtime
       ? this.skillsCache.value
       : await this.skillsLoader.buildSkillsSummary();
     if (skillsSummary) {

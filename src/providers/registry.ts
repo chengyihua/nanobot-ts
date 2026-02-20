@@ -249,7 +249,7 @@ export function createModel(modelId: string, config: Config): LanguageModelV1 {
 
   // 1. Explicit Provider Prefix (e.g. "anthropic:claude-3-5-sonnet")
   if (modelId.includes(':')) {
-    const [providerName, ...rest] = modelId.split(':');
+    const providerName = modelId.split(':')[0];
     const spec = PROVIDERS.find(p => p.name === providerName.toLowerCase());
     if (spec) {
       console.log(`[Registry] Using explicit provider: ${spec.displayName} for ${modelId}`);

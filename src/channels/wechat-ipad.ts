@@ -1,5 +1,5 @@
 import { WechatyBuilder, ScanStatus } from 'wechaty';
-// @ts-ignore
+// @ts-expect-error qrcode-terminal lacks types
 import qrcodeTerminal from 'qrcode-terminal';
 import { v4 as uuidv4 } from 'uuid';
 import { Config } from '../core/config.js';

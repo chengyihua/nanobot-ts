@@ -1,7 +1,7 @@
 import fs from 'fs-extra';
 import path from 'path';
 import cronParser from 'cron-parser';
-import { CronJob, CronJobState, CronSchedule, CronStore, CronStoreSchema, CronJobSchema } from './types.js';
+import { CronJob, CronSchedule, CronStore, CronStoreSchema } from './types.js';
 import { v4 as uuidv4 } from 'uuid';
 
 function nowMs(): number {
@@ -152,7 +152,6 @@ export class CronService {
     
     // Node.js setTimeout limit is 2^31 - 1 (~24.8 days)
     // 31528830266 is clearly too large. We cap it to 1 hour and wake up early to re-check.
-    const MAX_TIMEOUT = 2147483647; 
     const SAFE_MAX_DELAY = 3600000; // 1 hour
     
     if (delayMs > SAFE_MAX_DELAY) {

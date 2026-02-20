@@ -2,7 +2,6 @@
 import assert from 'assert';
 import fs from 'fs-extra';
 import path from 'path';
-import os from 'os';
 import { PluginLoader } from './plugin-loader.js';
 
 import { fileURLToPath } from 'url';

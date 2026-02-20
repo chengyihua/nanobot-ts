@@ -14,6 +14,7 @@ import { WeChatiPadChannel } from './channels/wechat-ipad.js';
 import { HeartbeatService } from './core/heartbeat.js';
 import { createLogger } from './utils/logger.js';
 import { registerSessionsCommand } from './commands/sessions.js';
+import { runStartupChecks } from './utils/startup-check.js';
 import { RedisTransportAdapter } from './core/bus-redis.js';
 
 const rootLog = createLogger('cli');
@@ -77,6 +78,9 @@ program
     }
 
     rootLog.info({ port }, 'Starting nanobot gateway');
+
+    const startupNotes = await runStartupChecks();
+    startupNotes.forEach(note => rootLog.warn(note));
 
     // Initialize Gateway Server
     const gateway = new Gateway(config);

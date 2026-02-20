@@ -43,7 +43,7 @@ export const QQOfficialConfigSchema = z.object({
     enabled: z.boolean().default(false),
     port: z.number().default(8080),
     path: z.string().default('/qq-official-webhook'),
-  }).default({}),
+  }).default({} as any),
 });
 
 // Telegram
@@ -157,16 +157,16 @@ export const WeChatiPadConfigSchema = z.object({
 });
 
 export const ChannelsConfigSchema = z.object({
-  whatsapp: WhatsAppConfigSchema.default({}),
-  telegram: TelegramConfigSchema.default({}),
-  discord: DiscordConfigSchema.default({}),
-  feishu: FeishuConfigSchema.default({}),
-  dingtalk: DingTalkConfigSchema.default({}),
-  email: EmailConfigSchema.default({}),
-  wecom: WeComConfigSchema.default({}),
-  qq: QQConfigSchema.default({}),
-  qq_official: QQOfficialConfigSchema.default({}),
-  wechat_ipad: WeChatiPadConfigSchema.default({}),
+  whatsapp: WhatsAppConfigSchema.default({} as any),
+  telegram: TelegramConfigSchema.default({} as any),
+  discord: DiscordConfigSchema.default({} as any),
+  feishu: FeishuConfigSchema.default({} as any),
+  dingtalk: DingTalkConfigSchema.default({} as any),
+  email: EmailConfigSchema.default({} as any),
+  wecom: WeComConfigSchema.default({} as any),
+  qq: QQConfigSchema.default({} as any),
+  qq_official: QQOfficialConfigSchema.default({} as any),
+  wechat_ipad: WeChatiPadConfigSchema.default({} as any),
 });
 
 // Agent Defaults
@@ -176,17 +176,18 @@ export const AgentDefaultsSchema = z.object({
   max_tokens: z.number().default(8192),
   temperature: z.number().default(0.7),
   max_iterations: z.number().default(20),
+  timeout_ms: z.number().default(300000), // Default 5 minutes
 });
 
 export const AgentsConfigSchema = z.object({
-  defaults: AgentDefaultsSchema.default({}),
+  defaults: AgentDefaultsSchema.default({} as any),
 });
 
 // Provider
 export const ProviderConfigSchema = z.object({
   api_key: z.string().default(''),
   api_base: z.string().url().optional().or(z.literal('')),
-  extra_headers: z.record(z.string()).optional(),
+  extra_headers: z.record(z.string(), z.string()).optional(),
   model: z.string().optional(), // Allow provider-specific default model
 });
 
@@ -196,18 +197,18 @@ export const BaiduConfigSchema = z.object({
 });
 
 export const ProvidersConfigSchema = z.object({
-  anthropic: ProviderConfigSchema.default({}),
-  openai: ProviderConfigSchema.default({}),
-  openrouter: ProviderConfigSchema.default({}),
-  deepseek: ProviderConfigSchema.default({}),
-  groq: ProviderConfigSchema.default({}),
-  zhipu: ProviderConfigSchema.default({}),
-  dashscope: ProviderConfigSchema.default({}),
-  vllm: ProviderConfigSchema.default({}),
-  gemini: ProviderConfigSchema.default({}),
-  moonshot: ProviderConfigSchema.default({}),
-  aihubmix: ProviderConfigSchema.default({}),
-  baidu: BaiduConfigSchema.default({}),
+  anthropic: ProviderConfigSchema.default({} as any),
+  openai: ProviderConfigSchema.default({} as any),
+  openrouter: ProviderConfigSchema.default({} as any),
+  deepseek: ProviderConfigSchema.default({} as any),
+  groq: ProviderConfigSchema.default({} as any),
+  zhipu: ProviderConfigSchema.default({} as any),
+  dashscope: ProviderConfigSchema.default({} as any),
+  vllm: ProviderConfigSchema.default({} as any),
+  gemini: ProviderConfigSchema.default({} as any),
+  moonshot: ProviderConfigSchema.default({} as any),
+  aihubmix: ProviderConfigSchema.default({} as any),
+  baidu: BaiduConfigSchema.default({} as any),
 });
 
 // Gateway
@@ -231,11 +232,19 @@ export const WebSearchConfigSchema = z.object({
 });
 
 export const WebToolsConfigSchema = z.object({
-  search: WebSearchConfigSchema.default({}),
+  search: WebSearchConfigSchema.default({} as any),
+  rate_limits: z.object({
+    webfetch_max: z.number().default(10),
+    webfetch_window_seconds: z.number().default(30),
+  }).default({} as any),
 });
 
 export const ExecToolConfigSchema = z.object({
   timeout: z.number().default(60),
+  rate_limits: z.object({
+    runcommand_max: z.number().default(5),
+    runcommand_window_seconds: z.number().default(30),
+  }).default({} as any),
 });
 
 export const HeartbeatConfigSchema = z.object({
@@ -243,11 +252,21 @@ export const HeartbeatConfigSchema = z.object({
   interval_seconds: z.number().default(1800), // 30 minutes
 });
 
+export const HousekeepingConfigSchema = z.object({
+  uploads_retention_days: z.number().default(7),
+  sessions_retention_days: z.number().default(30),
+});
+
 export const ToolsConfigSchema = z.object({
-  web: WebToolsConfigSchema.default({}),
-  exec: ExecToolConfigSchema.default({}),
+  web: WebToolsConfigSchema.default({} as any),
+  exec: ExecToolConfigSchema.default({} as any),
   // Safer默认值：限制文件访问在工作区内，需显式关闭才会全盘访问
   restrict_to_workspace: z.boolean().default(true),
+  // 运行时控制：并发、输出裁剪、历史压缩
+  tool_concurrency: z.number().default(3),
+  tool_result_maxchars: z.number().default(4000),
+  history_max_user_msgs: z.number().default(12),
+  history_max_tool_msgs: z.number().default(12),
 });
 
 // Behavior (Refactored hardcoded values)
@@ -257,14 +276,15 @@ export const BehaviorConfigSchema = z.object({
 
 // Root Config
 export const ConfigSchema = z.object({
-  agents: AgentsConfigSchema.default({}),
-  channels: ChannelsConfigSchema.default({}),
-  providers: ProvidersConfigSchema.default({}),
-  gateway: GatewayConfigSchema.default({}),
-  redis: RedisConfigSchema.default({}),
-  tools: ToolsConfigSchema.default({}),
-  heartbeat: HeartbeatConfigSchema.default({}),
-  behavior: BehaviorConfigSchema.default({}),
+  agents: AgentsConfigSchema.default({} as any),
+  channels: ChannelsConfigSchema.default({} as any),
+  providers: ProvidersConfigSchema.default({} as any),
+  gateway: GatewayConfigSchema.default({} as any),
+  redis: RedisConfigSchema.default({} as any),
+  tools: ToolsConfigSchema.default({} as any),
+  heartbeat: HeartbeatConfigSchema.default({} as any),
+  housekeeping: HousekeepingConfigSchema.default({} as any),
+  behavior: BehaviorConfigSchema.default({} as any),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -314,7 +334,7 @@ export async function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): Prom
   }
 
   // Merge env into file config (env takes priority)
-  let mergedConfig = mergeDeep(userConfig, envConfig);
+  const mergedConfig = mergeDeep(userConfig, envConfig);
 
   // Auto-map standard environment variables to providers if not already set
   // This simplifies config by supporting standard variable names directly
@@ -389,7 +409,12 @@ function mergeDeep(target: any, source: any): any {
         else
           output[key] = mergeDeep(target[key], source[key]);
       } else {
-        Object.assign(output, { [key]: source[key] });
+        // Protect against overwriting objects with non-objects (e.g. bad config)
+        if (!(key in target) || !isObject(target[key])) {
+          Object.assign(output, { [key]: source[key] });
+        } else {
+          console.warn(`[Config] Type mismatch for '${key}': keeping default object instead of overwriting with ${typeof source[key]}`);
+        }
       }
     });
   }

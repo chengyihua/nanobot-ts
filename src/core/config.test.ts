@@ -3,7 +3,7 @@ import assert from 'assert';
 import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
-import { loadConfig, Config } from './config.js';
+import { loadConfig } from './config.js';
 
 const TEST_DIR = path.join(os.tmpdir(), 'nanobot-config-test-' + Date.now());
 const CONFIG_PATH = path.join(TEST_DIR, 'config.json');

@@ -3,6 +3,8 @@ import path from 'path';
 import { Config, getWorkspacePath } from './config.js';
 import { bus } from './bus.js';
 import { createLogger } from '../utils/logger.js';
+import { cleanupUploads, recordSessionsCleanup } from '../utils/cleanup.js';
+import { sessionManager } from './session.js';
 
 const HEARTBEAT_PROMPT = `Read HEARTBEAT.md in your workspace (if it exists).
 Follow any instructions or tasks listed there.
@@ -108,7 +110,18 @@ export class HeartbeatService {
         return;
       }
 
-      await this.cleanupUploads(7);
+      const workspace = getWorkspacePath(this.config);
+      const retention = this.config.housekeeping?.uploads_retention_days ?? 7;
+      await cleanupUploads(workspace, { maxAgeDays: retention });
+
+      // Session 归档清理（防止磁盘无限增长）
+      const sessionRetention = this.config.housekeeping?.sessions_retention_days ?? 30;
+      const start = Date.now();
+      const removedSessions = sessionManager.cleanup(sessionRetention);
+      recordSessionsCleanup(removedSessions, sessionRetention, Date.now() - start);
+      if (removedSessions > 0) {
+        this.log.info({ removedSessions }, 'Session cleanup completed');
+      }
 
       const actionable = this.countActionable(content);
       if (isHeartbeatEmpty(content)) {
@@ -156,30 +169,6 @@ export class HeartbeatService {
       }
     }
     return false;
-  }
-
-  // Remove uploads older than retentionDays to prevent disk bloat
-  private async cleanupUploads(retentionDays = 7) {
-    try {
-      const workspace = getWorkspacePath(this.config);
-      const uploadsDir = path.join(workspace, 'uploads');
-      if (!(await fs.pathExists(uploadsDir))) return;
-      const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-      const files = await fs.readdir(uploadsDir);
-      for (const f of files) {
-        const fp = path.join(uploadsDir, f);
-        try {
-          const stat = await fs.stat(fp);
-          if (stat.isFile() && stat.mtimeMs < cutoff) {
-            await fs.remove(fp);
-          }
-        } catch (e) {
-          console.warn('[Heartbeat] Failed to inspect upload file:', fp, (e as any)?.message);
-        }
-      }
-    } catch (error: any) {
-      console.warn('[Heartbeat] Upload cleanup skipped:', error.message);
-    }
   }
 
   private async readHeartbeatFile(): Promise<string | null> {

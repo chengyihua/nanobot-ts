@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { generateText, CoreMessage, LanguageModelV1 } from 'ai';
+import { generateText, LanguageModelV1 } from 'ai';
 import { MessageBus } from './bus.js';
 import { ToolRegistry } from './tool-registry.js';
 import { Config } from './config.js';
@@ -110,7 +110,9 @@ export class SubagentManager {
         metadata: {
             sessionId: `${origin.channel}:${origin.chatId}`, // Ensure it routes to correct session
             to: origin.chatId, // Specific recipient
-            taskId
+            taskId,
+            originChannel: origin.channel,
+            originChatId: origin.chatId
         }
       });
 

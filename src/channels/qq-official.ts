@@ -213,7 +213,7 @@ export class QQOfficialChannel {
 
     // Process Event
     const eventType = req.body.t;
-    const eventId = req.body.id;
+    // const eventId = req.body.id; // currently unused, reserved for future correlation
     const data = req.body.d;
 
     // Acknowledge immediately

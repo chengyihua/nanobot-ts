@@ -4,7 +4,6 @@ import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import { MemoryStore } from './memory.js';
-import { DIRS, FILES, EXTENSIONS } from './constants.js';
 import { todayDate } from '../utils/helpers.js';
 
 const TEST_DIR = path.join(os.tmpdir(), 'nanobot-memory-test-' + Date.now());

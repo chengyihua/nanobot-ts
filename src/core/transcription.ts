@@ -61,7 +61,7 @@ export class TranscriptionService {
    */
   public async transcribe(filePath: string): Promise<string> {
     let processedPath = filePath;
-    let isTempFile = false;
+    const isTempFile = false;
 
     // 路径处理
     if (!path.isAbsolute(processedPath)) {

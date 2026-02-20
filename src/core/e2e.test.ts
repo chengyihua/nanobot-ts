@@ -21,7 +21,7 @@ class MockModel {
   
   constructor(private responses: any[]) {}
 
-  async doGenerate(options: any) {
+  async doGenerate() {
     const response = this.responses.shift();
     if (!response) {
       throw new Error('MockModel: No more responses configured');
@@ -40,7 +40,7 @@ class MockModel {
     };
   }
 
-  async doStream(options: any): Promise<any> {
+  async doStream(): Promise<any> {
     throw new Error('Not implemented');
   }
 }

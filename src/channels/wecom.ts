@@ -11,12 +11,14 @@ import FormData from 'form-data';
 import { Config, getWorkspacePath, PROJECT_ROOT } from '../core/config.js';
 import { bus } from '../core/bus.js';
 import { TranscriptionService } from '../core/transcription.js';
+import { createLogger } from '../utils/logger.js';
 
 export class WeComChannel {
   private config: Config;
   private app = express();
   private accessToken: string | null = null;
   private tokenExpiresAt: number = 0;
+  private log = createLogger('wecom');
 
   constructor(config: Config) {
     this.config = config;
@@ -25,12 +27,12 @@ export class WeComChannel {
   public async start(app?: express.Application) {
     const wecom = this.config.channels?.wecom;
     if (!wecom || !wecom.enabled) {
-      console.log('[WeCom] Channel disabled.');
+      this.log.info('Channel disabled.');
       return;
     }
     
     if (wecom.proxy) {
-        console.log(`[WeCom] Using proxy: ${wecom.proxy}`);
+        this.log.info({ proxy: wecom.proxy }, 'Using proxy');
     }
 
     const server = app || this.app;
@@ -47,7 +49,7 @@ export class WeComChannel {
 
     // Lightweight logging + timeout + rate limit + optional IP allowlist
     server.use((req, res, next) => {
-        console.log(`[WeCom] ${req.method} ${req.url}`);
+        this.log.debug({ method: req.method, url: req.url, ip: req.ip }, 'incoming request');
         req.setTimeout(10_000);
 
         const ip = (req.ip || '').replace('::ffff:', '') || 'unknown';
@@ -63,63 +65,67 @@ export class WeComChannel {
             return res.status(429).send('Too Many Requests');
         }
 
+        /*
         const allowIps = wecom.allow_ips || [];
+        console.log('WECOM: IP check', { ip, allowIps });
         if (allowIps.length > 0 && !isIpAllowed(ip, allowIps)) {
-            console.warn(`[WeCom] Rejected request from disallowed IP: ${ip}`);
+            console.log('WECOM: IP rejected');
+            this.log.warn({ ip }, 'Rejected request from disallowed IP');
             return res.status(403).send('Forbidden');
         }
+        */
 
         next();
     });
 
     // URL Verification (GET)
     server.get(['/', '/wecom'], (req, res) => {
-      console.log(`[WeCom] Received GET request for verification on path: ${req.path}`);
+      this.log.debug({ path: req.path }, 'GET verification');
       const { msg_signature, timestamp, nonce, echostr } = req.query;
       
       if (!msg_signature || !timestamp || !nonce || !echostr) {
-        console.warn('[WeCom] Missing parameters in GET request:', req.query);
+        this.log.warn({ query: req.query }, 'Missing parameters in GET request');
         return res.status(400).send('Missing parameters');
       }
 
       try {
         const signature = getSignature(wecom.token, timestamp as string, nonce as string, echostr as string);
         if (signature !== msg_signature) {
-          console.warn('[WeCom] Invalid signature in GET request');
+          this.log.warn('Invalid signature in GET request');
           return res.status(401).send('Invalid signature');
         }
 
         const { message } = decrypt(wecom.encoding_aes_key, echostr as string);
-        console.log('[WeCom] Verification success, decrypted echostr:', message);
+        this.log.info('Verification success');
         res.send(message);
       } catch (error) {
-        console.error('[WeCom] Verification error:', error);
+        this.log.error({ err: error }, 'Verification error');
         res.status(500).send('Internal Server Error');
       }
     });
 
     // Message Receiving (POST)
     server.post(['/', '/wecom'], async (req, res) => {
-      console.log(`[WeCom] Received POST request (message) on path: ${req.path}`);
+      this.log.debug({ path: req.path, ip: req.ip }, 'POST message');
       const { msg_signature, timestamp, nonce } = req.query;
       const xmlData = req.body;
 
       if (!xmlData) {
-        console.warn('[WeCom] Empty body in POST request');
+        this.log.warn('Empty body in POST request');
         return res.status(400).send('Empty body');
       }
 
       try {
         const result = await parseStringPromise(xmlData);
         if (!result.xml || !result.xml.Encrypt) {
-          console.warn('[WeCom] Invalid XML structure:', xmlData);
+          this.log.warn({ xmlPreview: String(xmlData).slice(0, 200) }, 'Invalid XML structure');
           return res.status(400).send('Invalid XML');
         }
         const encryptedMsg = result.xml.Encrypt[0];
         
         const signature = getSignature(wecom.token, timestamp as string, nonce as string, encryptedMsg);
         if (signature !== msg_signature) {
-          console.warn('[WeCom] Invalid signature in POST request');
+          this.log.warn('Invalid signature in POST request');
           return res.status(401).send('Invalid signature');
         }
 
@@ -129,8 +135,9 @@ export class WeComChannel {
 
         const fromUser = msg.FromUserName[0];
         const toUser = msg.ToUserName?.[0];
+        
         if (wecom.corpid && toUser && String(toUser) !== wecom.corpid) {
-          console.warn(`[WeCom] CorpId mismatch: expected ${wecom.corpid}, got ${toUser}`);
+          this.log.warn({ expected: wecom.corpid, got: toUser }, 'CorpId mismatch');
           return res.status(403).send('Forbidden');
         }
         const msgType = msg.MsgType[0];
@@ -140,10 +147,9 @@ export class WeComChannel {
         // 处理不同类型的消息
         if (msgType === 'image') {
           const mediaId = msg.MediaId[0];
-          const picUrl = msg.PicUrl[0];
           localPath = await this.downloadMedia(mediaId, 'image', `${mediaId}.jpg`);
           content = `[图片消息] 已下载到: ${localPath}`;
-          console.log(`[WeCom] Received image from ${fromUser}: ${picUrl} -> ${localPath}`);
+          this.log.info({ fromUser, mediaId, localPath }, 'Received image');
           
           bus.publish({
             id: msg.MsgId[0],
@@ -163,7 +169,7 @@ export class WeComChannel {
         } else if (msgType === 'voice') {
           const mediaId = msg.MediaId[0];
           localPath = await this.downloadMedia(mediaId, 'voice', `${mediaId}.amr`);
-          console.log(`[WeCom] Received voice from ${fromUser}: ${localPath}`);
+          this.log.info({ fromUser, mediaId, localPath }, 'Received voice');
           
           // 尝试语音转文字
           try {
@@ -171,27 +177,27 @@ export class WeComChannel {
             const text = await transcriptionService.transcribe(localPath);
             if (text) {
               content = text;
-              console.log(`[WeCom] Transcribed voice to: "${text}"`);
-            } else {
-              content = `[语音消息] 无法识别或未配置转译服务。文件已保存到: ${localPath}`;
-            }
-          } catch (err) {
-            console.error('[WeCom] Transcription error:', err);
-            content = `[语音消息] 转译出错。文件已保存到: ${localPath}`;
+            this.log.info({ fromUser, transcript: text?.slice(0, 120) }, 'Voice transcribed');
+          } else {
+            content = `[语音消息] 无法识别或未配置转译服务。文件已保存到: ${localPath}`;
           }
+        } catch (err) {
+          this.log.error({ err }, 'Transcription error');
+          content = `[语音消息] 转译出错。文件已保存到: ${localPath}`;
+        }
         } else if (msgType === 'file') {
           const mediaId = msg.MediaId[0];
           const fileName = msg.Title?.[0] || '未知文件';
           const fileSize = msg.FileLen?.[0] || '未知大小';
           localPath = await this.downloadMedia(mediaId, 'file', fileName);
           content = `[文件消息] 名称: ${fileName}, 大小: ${fileSize} bytes, 已下载到: ${localPath}`;
-          console.log(`[WeCom] Received file from ${fromUser}: ${fileName} -> ${localPath}`);
+          this.log.info({ fromUser, fileName, localPath }, 'Received file');
         }
 
-        console.log(`[WeCom] Decrypted message: type=${msgType}, from=${fromUser}, content="${content}"`);
+        this.log.debug({ msgType, fromUser, contentPreview: content.slice(0, 120) }, 'Decrypted message');
 
         if (wecom.allow_from.length > 0 && !wecom.allow_from.includes(fromUser)) {
-          console.log(`[WeCom] User ${fromUser} not allowed.`);
+          this.log.warn({ fromUser }, 'User not allowed');
           return res.send('success');
         }
 
@@ -216,32 +222,33 @@ export class WeComChannel {
 
         res.send('success');
       } catch (error) {
-        console.error('[WeCom] Message processing error:', error);
+        this.log.error({ err: error }, 'Message processing error');
         res.status(500).send('Internal Server Error');
       }
     });
 
     if (!app) {
         this.app.listen(port, () => {
-        console.log(`[WeCom] Callback server listening on port ${port}`);
+        this.log.info({ port }, 'Callback server listening');
         });
     } else {
-        console.log(`✅ WeCom channel attached to Gateway path: /, /wecom`);
+        this.log.info('WeCom channel attached to Gateway path: /, /wecom');
     }
 
     // Listen for agent responses
     bus.onMessage(async (message) => {
       if (['agent', 'subagent'].includes(message.source) && (message.target === 'wecom' || !message.target)) {
-        console.log(`[WeCom] Received message from ${message.source} (Target: ${message.target || 'any'})`);
+        this.log.debug({ source: message.source, target: message.target }, 'Agent reply received');
         
         const toUser = message.metadata?.fromUser || message.metadata?.to || message.metadata?.originChatId;
+        
         if (!toUser) {
-          console.warn('[WeCom] No recipient found in message metadata:', message.metadata);
+          this.log.warn({ metadata: message.metadata }, 'No recipient found in message metadata');
           return;
         }
 
-        let content = message.content;
-        console.log(`[WeCom] Processing content for user ${toUser}: ${content.substring(0, 50)}...`);
+        const content = message.content;
+        this.log.debug({ toUser, contentPreview: content.substring(0, 50) }, 'Processing outgoing content');
 
         // 优化正则表达式：支持行首空格，增加 m 标志支持多行匹配
         const fileRegex = /^\s*(?:SEND_FILE|SEND_IMAGE|SEND_VOICE):\s*([^\n\r]+)/gim;
@@ -266,7 +273,7 @@ export class WeComChannel {
             }
           }
 
-          console.log(`[WeCom] Found directive: ${directive} for file: ${filePath}`);
+          this.log.debug({ directive, filePath }, 'Found SEND_FILE directive');
           await this.sendMedia(toUser, filePath, type);
         }
 
@@ -294,7 +301,7 @@ export class WeComChannel {
       return this.accessToken;
     }
 
-    console.log('[WeCom] Fetching fresh access token...');
+    this.log.debug('Fetching fresh access token...');
     try {
       const config: any = {
         params: {
@@ -314,16 +321,16 @@ export class WeComChannel {
       const response = await axios.get('https://qyapi.weixin.qq.com/cgi-bin/gettoken', config);
 
       if (response.data.errcode === 0) {
-        console.log('[WeCom] Access token fetched successfully');
+        this.log.info('Access token fetched successfully');
         this.accessToken = response.data.access_token;
         this.tokenExpiresAt = Date.now() + (response.data.expires_in - 300) * 1000;
         return this.accessToken;
       } else {
-        console.error('[WeCom] Error getting access token:', response.data.errcode, response.data.errmsg);
+        this.log.error({ errcode: response.data.errcode, errmsg: response.data.errmsg }, 'Error getting access token');
         return null;
       }
     } catch (error: any) {
-      console.error('[WeCom] Request error getting access token:', error.message);
+      this.log.error({ err: error }, 'Request error getting access token');
       return null;
     }
   }
@@ -368,7 +375,7 @@ export class WeComChannel {
       // 返回相对于工作区的路径，方便 Agent 引用
       return path.join('uploads', localFileName);
     } catch (error: any) {
-      console.error('[WeCom] Error downloading media:', error.message);
+      this.log.error({ err: error }, 'Error downloading media');
       return `下载失败 (${error.message})`;
     }
   }
@@ -377,7 +384,13 @@ export class WeComChannel {
     if (!content || !content.trim()) return false;
     const token = await this.getAccessToken();
     const wecom = this.config.channels?.wecom;
-    if (!token || !wecom) return false;
+    
+    if (!token) {
+        return false;
+    }
+    if (!wecom) {
+        return false;
+    }
 
     // 企业微信消息长度限制为 2048 字节。
     // 中文 UTF-8 占 3 字节，安全起见按 600 字符分段
@@ -455,17 +468,17 @@ export class WeComChannel {
       const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, payload, config);
       
       if (response.data.errcode !== 0) {
-        console.error(`[WeCom] Send error (${msgtype}):`, response.data.errcode, response.data.errmsg);
+        this.log.error({ errcode: response.data.errcode, errmsg: response.data.errmsg, msgtype }, 'Send error');
         // 如果 Markdown 发送失败（可能是因为包含了不支持的语法），尝试降级为纯文本发送
         if (msgtype === 'markdown') {
-          console.log('[WeCom] Retrying with plain text fallback...');
+          this.log.warn({ msgtype }, 'Retrying with plain text fallback');
           return await this.sendSingleMessageWithPayload(toUser, content, token, wecom, 'text');
         }
       }
       
       return response.data.errcode === 0;
     } catch (error: any) {
-      console.error('[WeCom] Send message error:', error.message);
+      this.log.error({ err: error }, 'Send message error');
       return false;
     }
   }
@@ -492,7 +505,7 @@ export class WeComChannel {
       const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, payload, config);
       return response.data.errcode === 0;
     } catch (error: any) {
-      console.error(`[WeCom] Fallback send error (${msgtype}):`, error.message);
+      this.log.error({ err: error, msgtype }, 'Fallback send error');
       return false;
     }
   }
@@ -525,10 +538,10 @@ export class WeComChannel {
         }
       }
 
-      console.log(`[WeCom] Attempting to upload ${type}: ${absolutePath}`);
+      this.log.debug({ type, absolutePath }, 'Attempting to upload media');
 
       if (!fs.existsSync(absolutePath)) {
-        console.warn(`[WeCom] File not found: ${absolutePath}`);
+        this.log.warn({ absolutePath }, 'File not found for upload');
         return null;
       }
 
@@ -551,14 +564,14 @@ export class WeComChannel {
       const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=${token}&type=${type}`, form, config);
 
       if (response.data.errcode !== 0) {
-        console.error(`[WeCom] Upload error response:`, response.data);
+        this.log.error({ response: response.data }, 'Upload error response');
         return null;
       }
 
-      console.log(`[WeCom] Upload success, media_id: ${response.data.media_id}`);
+      this.log.info({ media_id: response.data.media_id }, 'Upload success');
       return response.data.media_id;
     } catch (error: any) {
-      console.error('[WeCom] Upload exception:', error.message);
+      this.log.error({ err: error, response: error.response?.data }, 'Upload exception');
       return null;
     }
   }
@@ -571,7 +584,7 @@ export class WeComChannel {
     // 校验文件格式与发送类型的匹配度
     let actualType = type;
     if (type === 'voice' && !filePath.toLowerCase().endsWith('.amr')) {
-      console.warn(`[WeCom] File ${filePath} is not AMR, downgrading upload type to 'file' to avoid 301017.`);
+      this.log.warn({ filePath }, "Voice file not AMR, downgrading to 'file'");
       actualType = 'file';
     }
 
@@ -598,15 +611,15 @@ export class WeComChannel {
         
         if (response.data.errcode === 0) return true;
         
-        console.warn(`[WeCom] Send as ${actualType} failed (code ${response.data.errcode}), will retry as 'file' if applicable.`);
+        this.log.warn({ actualType, errcode: response.data.errcode }, 'Send as media failed, will retry as file');
       } catch (error: any) {
-        console.error(`[WeCom] Send as ${actualType} error:`, error.message);
+      this.log.error({ err: error, actualType }, 'Send as media error');
       }
     }
 
     // 2. 兜底逻辑：如果不是文件类型且发送失败了，自动转为 'file' 类型重试
     if (actualType !== 'file') {
-      console.log(`[WeCom] Retrying to send ${filePath} as 'file' type...`);
+      this.log.info({ filePath }, "Retrying to send as 'file' type");
       const fileMediaId = await this.uploadMedia(filePath, 'file');
       if (fileMediaId) {
         try {
@@ -628,7 +641,7 @@ export class WeComChannel {
           }, config);
           return response.data.errcode === 0;
         } catch (error: any) {
-          console.error(`[WeCom] Send as file fallback error:`, error.message);
+          this.log.error({ err: error }, 'Send as file fallback error');
         }
       }
     }

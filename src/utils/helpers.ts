@@ -68,7 +68,7 @@ export function truncateString(s: string, maxLen: number = 100, suffix: string =
  */
 export function safeFilename(name: string): string {
   // Replace unsafe characters
-  const unsafe = /[<>:"\/\\|?*]/g;
+  const unsafe = /[<>:"/\\|?*]/g;
   return name.replace(unsafe, '_').trim();
 }
 

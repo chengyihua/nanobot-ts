@@ -1,5 +1,3 @@
-import { tool } from 'ai';
-import { z } from 'zod';
 import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
@@ -8,7 +6,6 @@ import { Config, getWorkspacePath } from './config.js';
 import { PluginLoader } from './plugin-loader.js';
 import { createModel } from '../providers/registry.js';
 import { ToolOptions } from '../tools/types.js';
-import { TranscriptionService } from './transcription.js';
 
 import { createFsTools } from '../tools/definitions/fs.js';
 import { createCommunicationTools } from '../tools/definitions/communication.js';
@@ -18,6 +15,7 @@ import { createWebTools } from '../tools/definitions/web.js';
 import { createAgentTools } from '../tools/definitions/agent.js';
 import { createMemoryTools } from '../tools/definitions/memory.js';
 import { createLogger } from '../utils/logger.js';
+import { housekeepingStats } from '../utils/cleanup.js';
 
 export class ToolRegistry {
   private config: Config;
@@ -103,7 +101,7 @@ export class ToolRegistry {
       try {
         return createModel(modelId, this.config);
       } catch (error) {
-        console.error(`[Tools] Failed to create model for ${modelId}:`, error);
+        this.log.error({ err: error, modelId }, 'Failed to create model for tool');
         return null;
       }
     };
@@ -117,7 +115,61 @@ export class ToolRegistry {
     const agentTools = createAgentTools(options);
     const memoryTools = createMemoryTools(options);
 
-    return {
+    // 高风险工具的轻量限流器（滑动窗口计数），避免命令/网络工具被滥用
+    const execRate = this.config.tools?.exec?.rate_limits;
+    const webRate = this.config.tools?.web?.rate_limits;
+    const rateLimits: Record<string, { windowMs: number; max: number; hits: number[] }> = {
+      runCommand: {
+        windowMs: (execRate?.runcommand_window_seconds ?? 30) * 1000,
+        max: execRate?.runcommand_max ?? 5,
+        hits: [],
+      },
+      webFetch: {
+        windowMs: (webRate?.webfetch_window_seconds ?? 30) * 1000,
+        max: webRate?.webfetch_max ?? 10,
+        hits: [],
+      },
+    };
+
+    const wrapWithRateLimit = (toolName: string, toolImpl: any) => {
+      const limitCfg = rateLimits[toolName];
+      if (!limitCfg || typeof toolImpl?.execute !== 'function') return toolImpl;
+
+      const originalExecute = toolImpl.execute;
+      toolImpl.execute = async (...args: any[]) => {
+        const now = Date.now();
+        limitCfg.hits = limitCfg.hits.filter(t => now - t < limitCfg.windowMs);
+        const remaining = limitCfg.max - limitCfg.hits.length;
+        if (toolName === 'runCommand') {
+          housekeepingStats.rate_limits.runcommand_remaining = Math.max(0, remaining);
+        } else if (toolName === 'webFetch') {
+          housekeepingStats.rate_limits.webfetch_remaining = Math.max(0, remaining);
+        }
+        if (limitCfg.hits.length >= limitCfg.max) {
+          if (toolName === 'runCommand') {
+            housekeepingStats.rate_limits.runcommand_triggers += 1;
+            this.log.warn({ tool: toolName, windowMs: limitCfg.windowMs, max: limitCfg.max }, 'runCommand rate limited');
+          } else if (toolName === 'webFetch') {
+            housekeepingStats.rate_limits.webfetch_triggers += 1;
+            this.log.warn({ tool: toolName, windowMs: limitCfg.windowMs, max: limitCfg.max }, 'webFetch rate limited');
+          }
+          const retryAfter = Math.ceil((limitCfg.windowMs - (now - limitCfg.hits[0])) / 1000);
+          return { error: `Rate limited: ${toolName} exceeds ${limitCfg.max} calls/${limitCfg.windowMs/1000}s. Retry after ~${retryAfter}s.` };
+        }
+        limitCfg.hits.push(now);
+        const remainingAfter = limitCfg.max - limitCfg.hits.length;
+        if (toolName === 'runCommand') {
+          housekeepingStats.rate_limits.runcommand_remaining = Math.max(0, remainingAfter);
+        } else if (toolName === 'webFetch') {
+          housekeepingStats.rate_limits.webfetch_remaining = Math.max(0, remainingAfter);
+        }
+        return originalExecute.apply(toolImpl, args);
+      };
+      return toolImpl;
+    };
+
+    // 注册工具
+    const toolsMap = {
       tools: {
         ...fsTools,
         ...communicationTools,
@@ -130,6 +182,15 @@ export class ToolRegistry {
       },
       initPromise: Promise.resolve()
     };
+
+    // 包裹限流的工具
+    ['runCommand', 'webFetch'].forEach(name => {
+      if ((toolsMap.tools as any)[name]) {
+        (toolsMap.tools as any)[name] = wrapWithRateLimit(name, (toolsMap.tools as any)[name]);
+      }
+    });
+
+    return toolsMap;
   }
 
   public getToolDefinitionsSummary(): string {

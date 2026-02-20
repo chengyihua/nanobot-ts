@@ -1,0 +1,20 @@
+version: '3'
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: napcat
+    environment:
+      - ACCOUNT=  # 在这里填入你的QQ号，或者留空启动后扫码
+      - WS_ENABLE=true
+      - HTTP_ENABLE=true
+      - HTTP_POST_ENABLE=true
+      - HTTP_URLS=["http://host.docker.internal:3001"] # 指向 Nanobot 的地址
+    ports:
+      - "6099:6099" # NapCat WebUI
+      - "5700:5700" # NapCat HTTP API
+    volumes:
+      - ./napcat/config:/app/config
+      - ./napcat/logs:/app/logs
+    # macOS/Windows Docker Desktop 可以使用 host.docker.internal 访问宿主机
+    # Linux 下推荐使用 network_mode: "host" 并移除 ports 映射
+    restart: always

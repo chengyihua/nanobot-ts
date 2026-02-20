@@ -1,10 +1,10 @@
 import { type CoreMessage } from 'ai';
 import fs from 'fs-extra';
 import path from 'path';
-import os from 'os';
 import { LRUCache } from 'lru-cache';
 import { getSessionsPath } from '../utils/helpers.js';
 import { EXTENSIONS } from './constants.js';
+import { createLogger } from '../utils/logger.js';
 
 export interface SessionData {
   key: string;
@@ -17,6 +17,7 @@ export interface SessionData {
 export class SessionManager {
   private sessionsDir: string;
   private cache: LRUCache<string, SessionData>;
+  private log = createLogger('session');
 
   constructor(options?: { cacheMax?: number; cacheTTL?: number; sessionsDir?: string }) {
     this.sessionsDir = options?.sessionsDir || getSessionsPath();
@@ -28,12 +29,12 @@ export class SessionManager {
   }
 
   private getSessionPath(key: string): string {
-    const safeKey = key.replace(/[:\/\\?%*|"<>]/g, '_');
+    const safeKey = key.replace(/[:/\\?%*|"<>]/g, '_');
     return path.join(this.sessionsDir, `${safeKey}${EXTENSIONS.JSONL}`);
   }
 
   private getArchivePath(key: string): string {
-    const safeKey = key.replace(/[:\/\\?%*|"<>]/g, '_');
+    const safeKey = key.replace(/[:/\\?%*|"<>]/g, '_');
     return path.join(this.sessionsDir, `${safeKey}${EXTENSIONS.ARCHIVE_JSONL}`);
   }
 
@@ -52,9 +53,9 @@ export class SessionManager {
       if (await fs.pathExists(archivePath)) {
         await fs.unlink(archivePath);
       }
-      console.log(`[Session] Cleared session ${sessionId} (cache and disk).`);
+      this.log.info({ sessionId }, 'Cleared session (cache + disk)');
     } catch (error) {
-      console.error(`[Session] Error clearing session ${sessionId}:`, error);
+      this.log.error({ sessionId, err: error }, 'Error clearing session');
     }
   }
 
@@ -66,7 +67,7 @@ export class SessionManager {
     }
 
     // 从 limit 位置开始切分
-    let messages = session.messages.slice(-limit);
+    const messages = session.messages.slice(-limit);
     
     // 确保切分后的第一条消息不是 tool 消息
     // 如果是 tool 消息，说明其配对的 assistant 消息被切掉了
@@ -122,7 +123,7 @@ export class SessionManager {
       const content = fs.readFileSync(filePath, 'utf-8');
       const lines = content.split('\n').filter(line => line.trim());
       
-      let messages: CoreMessage[] = [];
+      const messages: CoreMessage[] = [];
       let metadata: Record<string, any> = {};
       let createdAt = new Date().toISOString();
       let updatedAt = new Date().toISOString();
@@ -141,7 +142,7 @@ export class SessionManager {
           // If a line is corrupted, we don't just warn, we log it for debugging
           // and skip it to keep the history as intact as possible.
           // The next saveToDisk will effectively "clean" the file.
-          console.warn(`[Session] Skipping corrupted line in session ${key}: ${line.slice(0, 100)}...`);
+          this.log.warn({ sessionId: key, preview: line.slice(0, 100) }, 'Skipping corrupted line in session file');
           continue;
         }
       }
@@ -154,7 +155,7 @@ export class SessionManager {
         metadata,
       };
     } catch (error) {
-      console.error(`[Session] Error loading session ${key}:`, error);
+      this.log.error({ sessionId: key, err: error }, 'Error loading session');
       return null;
     }
   }
@@ -187,7 +188,7 @@ export class SessionManager {
       const content = messages.map(msg => JSON.stringify(msg)).join('\n') + '\n';
       await fs.appendFile(archivePath, content, 'utf-8');
     } catch (error) {
-      console.error(`[Session] Error appending to archive ${key}:`, error);
+      this.log.error({ sessionId: key, err: error }, 'Error appending to archive');
     }
   }
 
@@ -234,7 +235,7 @@ export class SessionManager {
         }
       }
     } catch (error) {
-      console.error(`[Session] Error searching archive ${sessionId}:`, error);
+      this.log.error({ sessionId, err: error }, 'Error searching archive');
     }
 
     return results;
@@ -310,7 +311,7 @@ export class SessionManager {
                 if (results.length >= limit) break;
              }
         } catch (e) {
-            console.error(`[Session] Error searching file ${file}:`, e);
+            this.log.error({ file, err: e }, 'Error searching archive file');
         }
     }
 
@@ -328,7 +329,7 @@ export class SessionManager {
     try {
       await fs.appendFile(filePath, JSON.stringify(message) + '\n', 'utf-8');
     } catch (error) {
-      console.error(`[Session] Error appending to session ${key}:`, error);
+      this.log.error({ sessionId: key, err: error }, 'Error appending to session');
     }
   }
 
@@ -349,7 +350,7 @@ export class SessionManager {
       await fs.writeFile(tempPath, content, 'utf-8');
       await fs.move(tempPath, filePath, { overwrite: true });
     } catch (error) {
-      console.error(`[Session] Error saving session ${session.key}:`, error);
+      this.log.error({ sessionId: session.key, err: error }, 'Error saving session');
       if (await fs.pathExists(tempPath)) {
         await fs.remove(tempPath);
       }

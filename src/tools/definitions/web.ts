@@ -4,6 +4,14 @@ import axios from 'axios';
 // heavy deps按需加载以减少冷启动
 import { ToolOptions } from '../types.js';
 
+const truncateContent = (content: string, limit = 30000) => {
+  if (content.length <= limit) return content;
+  const head = content.slice(0, Math.floor(limit * 0.6));
+  const tail = content.slice(-Math.floor(limit * 0.3));
+  const skipped = content.length - head.length - tail.length;
+  return `${head}\n...\n${tail}\n[truncated ${skipped} chars of fetched content]`;
+};
+
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36';
 
 export const createWebTools = (options: ToolOptions) => {
@@ -67,13 +75,10 @@ export const createWebTools = (options: ToolOptions) => {
             await parser.destroy();
             
             const content = result.text;
-            const MAX_CHARS = 30000;
             return {
               url,
               contentType: 'application/pdf',
-              content: content.length > MAX_CHARS 
-                ? content.substring(0, MAX_CHARS) + `\n\n... (truncated, total: ${content.length})` 
-                : content,
+              content: truncateContent(content, 30000),
               totalChars: content.length
             };
           }
@@ -98,11 +103,7 @@ export const createWebTools = (options: ToolOptions) => {
           doc.querySelectorAll('script, style, nav, footer, iframe, noscript').forEach(el => el.remove());
           
           const markdown = turndownService.turndown(doc.body.innerHTML);
-          
-          const MAX_CHARS = 30000;
-          const content = markdown.length > MAX_CHARS 
-            ? markdown.substring(0, MAX_CHARS) + `\n\n... (truncated, total: ${markdown.length})` 
-            : markdown;
+          const content = truncateContent(markdown, 30000);
 
           return {
             url,

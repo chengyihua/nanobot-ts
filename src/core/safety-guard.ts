@@ -1,8 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
 import { Config, getWorkspacePath } from './config.js';
-
-const toolHallucinationPattern = /^\s*(runCommand|readFile|writeFile|listDir|editFile|describeImage|message|spawn|transcribe|synthesize|webSearch|webFetch|cron|spawnSubagent|saveMemory|switchModel|getSystemDiagnostics):\s*(\{[\s\S]*?\}|[^\s\n\r]+)/gim;
 const dsmlHallucinationPattern = /<｜DSML｜function_calls>(?:[\s\S]*?<\/｜DSML｜function_calls>|[\s\S]*$)/gim;
 const directivePattern = /^\s*(?:SEND_FILE|SEND_IMAGE|SEND_VOICE):\s*([^\n\r]+)/gim;
 
@@ -37,7 +35,7 @@ export class SafetyGuard {
     return false;
   }
 
-  public detectIntentMismatch(text: string, hasToolCalls: boolean): boolean {
+  public detectIntentMismatch(): boolean {
     return false; // Disabled as per user request for generalized behavior
   }
 

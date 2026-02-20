@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "12306-mcp": {
+      "command": "12306-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

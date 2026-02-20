@@ -150,8 +150,8 @@ export class SkillsLoader {
     const allSkills = await this.listSkills(true);
     for (const s of allSkills) {
       const parsed = await this.loadParsedSkill(s.name);
-      const metadata = parsed?.metadata;
-      if (metadata?.always === 'true' || metadata?.metadata?.nanobot?.always === true) {
+      const meta = parsed?.metadata;
+      if (meta?.always === 'true' || meta?.metadata?.nanobot?.always === true) {
         result.push(s.name);
       }
     }
@@ -159,7 +159,7 @@ export class SkillsLoader {
   }
 
   private parseSkillContent(content: string): { body: string; metadata: any } {
-    let metadata: any = {};
+    const metadata: any = {};
     let body = content;
 
     if (content.startsWith('---')) {

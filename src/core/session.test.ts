@@ -60,10 +60,7 @@ async function testLRUCache() {
   // Check s2 (should be evicted, so metadata lost when reloaded from disk/empty)
   // First, verify s2 was evicted by checking if we get a fresh object
   // Since we didn't save s2 to disk, reloading it will return a fresh empty session
-  const s2_check = manager.getOrCreate('s2');
-  // We didn't set metadata on s2, but we can check referential equality if we kept a reference?
-  // No, easiest is to rely on side effects or just trust the logic.
-  
+  // We didn't set metadata on s2; eviction logic is covered by reloading below.
   // Let's do the "eviction test" more explicitly
   const manager2 = new SessionManager({ 
     sessionsDir: TEST_DIR,
@@ -73,7 +70,7 @@ async function testLRUCache() {
   const sessA = manager2.getOrCreate('sessA');
   sessA.metadata['foo'] = 'bar';
   
-  const sessB = manager2.getOrCreate('sessB'); // sessA should be evicted
+  manager2.getOrCreate('sessB'); // sessA should be evicted
   
   const sessA_new = manager2.getOrCreate('sessA'); // Reloaded
   assert.strictEqual(sessA_new.metadata['foo'], undefined, 'Evicted session data not saved to disk should be lost');
