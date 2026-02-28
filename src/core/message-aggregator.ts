@@ -1,4 +1,4 @@
-import { Message } from './bus.js';
+import type { Message } from './bus.js';
 
 type Aggregator = {
   timer: NodeJS.Timeout;

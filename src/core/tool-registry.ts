@@ -6,6 +6,10 @@ import { Config, getWorkspacePath } from './config.js';
 import { PluginLoader } from './plugin-loader.js';
 import { createModel } from '../providers/registry.js';
 import { ToolOptions } from '../tools/types.js';
+import { MCPClientManager } from './mcp/client-manager.js';
+import { jsonSchemaToZod } from '../utils/json-schema-to-zod.js';
+import { tool } from 'ai';
+import { z } from 'zod';
 
 import { createFsTools } from '../tools/definitions/fs.js';
 import { createCommunicationTools } from '../tools/definitions/communication.js';
@@ -14,6 +18,7 @@ import { createSystemTools } from '../tools/definitions/system.js';
 import { createWebTools } from '../tools/definitions/web.js';
 import { createAgentTools } from '../tools/definitions/agent.js';
 import { createMemoryTools } from '../tools/definitions/memory.js';
+import { createMCPTools } from '../tools/definitions/mcp.js';
 import { createLogger } from '../utils/logger.js';
 import { housekeepingStats } from '../utils/cleanup.js';
 
@@ -21,10 +26,13 @@ export class ToolRegistry {
   private config: Config;
   private log = createLogger('tool-registry');
   private pluginTools: Record<string, any> = {};
+  private mcpTools: Record<string, any> = {};
+  private mcpManager?: MCPClientManager;
   private cleanupRegistered = false;
 
-  constructor(config: Config) {
+  constructor(config: Config, mcpManager?: MCPClientManager) {
     this.config = config;
+    this.mcpManager = mcpManager || new MCPClientManager(config);
     this.setupCleanup();
   }
 
@@ -37,12 +45,40 @@ export class ToolRegistry {
   }
 
   public async close() {
-    // No-op for now as MCP client cleanup is removed
+    if (this.mcpManager) {
+      await this.mcpManager.close();
+    }
   }
 
   public async initialize() {
+    // Initialize MCP Manager
+    if (this.mcpManager) {
+      await this.mcpManager.initialize();
+    }
     // Load Plugins
     await this.loadPlugins();
+    // Load MCP Tools
+    await this.loadMCPTools();
+  }
+
+  private async loadMCPTools() {
+    if (!this.mcpManager) return;
+    
+    try {
+      const tools = await this.mcpManager.listTools();
+      for (const t of tools) {
+        this.mcpTools[t.name] = tool({
+          description: t.description || '',
+          parameters: jsonSchemaToZod(t.inputSchema) as z.ZodTypeAny,
+          execute: async (args: any) => {
+            return await this.mcpManager!.callTool(t.serverName, t.originalName, args);
+          },
+        });
+      }
+      this.log.info({ count: tools.length }, 'Loaded MCP tools');
+    } catch (error) {
+      this.log.error({ error }, 'Failed to load MCP tools');
+    }
   }
 
   private async loadPlugins() {
@@ -114,6 +150,7 @@ export class ToolRegistry {
     const webTools = createWebTools(options);
     const agentTools = createAgentTools(options);
     const memoryTools = createMemoryTools(options);
+    const mcpMetaTools = this.mcpManager ? createMCPTools(this.mcpManager) : {};
 
     // 高风险工具的轻量限流器（滑动窗口计数），避免命令/网络工具被滥用
     const execRate = this.config.tools?.exec?.rate_limits;
@@ -137,32 +174,34 @@ export class ToolRegistry {
 
       const originalExecute = toolImpl.execute;
       toolImpl.execute = async (...args: any[]) => {
-        const now = Date.now();
+        let now = Date.now();
         limitCfg.hits = limitCfg.hits.filter(t => now - t < limitCfg.windowMs);
-        const remaining = limitCfg.max - limitCfg.hits.length;
-        if (toolName === 'runCommand') {
-          housekeepingStats.rate_limits.runcommand_remaining = Math.max(0, remaining);
-        } else if (toolName === 'webFetch') {
-          housekeepingStats.rate_limits.webfetch_remaining = Math.max(0, remaining);
-        }
+        
         if (limitCfg.hits.length >= limitCfg.max) {
-          if (toolName === 'runCommand') {
-            housekeepingStats.rate_limits.runcommand_triggers += 1;
-            this.log.warn({ tool: toolName, windowMs: limitCfg.windowMs, max: limitCfg.max }, 'runCommand rate limited');
-          } else if (toolName === 'webFetch') {
-            housekeepingStats.rate_limits.webfetch_triggers += 1;
-            this.log.warn({ tool: toolName, windowMs: limitCfg.windowMs, max: limitCfg.max }, 'webFetch rate limited');
+          const oldestHit = limitCfg.hits[0];
+          const waitMs = limitCfg.windowMs - (now - oldestHit) + 100; // Add buffer
+          
+          if (waitMs > 0) {
+            this.log.info({ tool: toolName, waitMs }, 'Rate limit reached, throttling execution...');
+            await new Promise(resolve => setTimeout(resolve, waitMs));
+            
+            // Re-check time after waiting
+            now = Date.now();
+            limitCfg.hits = limitCfg.hits.filter(t => now - t < limitCfg.windowMs);
           }
-          const retryAfter = Math.ceil((limitCfg.windowMs - (now - limitCfg.hits[0])) / 1000);
-          return { error: `Rate limited: ${toolName} exceeds ${limitCfg.max} calls/${limitCfg.windowMs/1000}s. Retry after ~${retryAfter}s.` };
         }
+        
         limitCfg.hits.push(now);
-        const remainingAfter = limitCfg.max - limitCfg.hits.length;
+        const remaining = Math.max(0, limitCfg.max - limitCfg.hits.length);
+        
         if (toolName === 'runCommand') {
-          housekeepingStats.rate_limits.runcommand_remaining = Math.max(0, remainingAfter);
+          housekeepingStats.rate_limits.runcommand_remaining = remaining;
+          housekeepingStats.rate_limits.runcommand_triggers += 1; // Count throttled calls too
         } else if (toolName === 'webFetch') {
-          housekeepingStats.rate_limits.webfetch_remaining = Math.max(0, remainingAfter);
+          housekeepingStats.rate_limits.webfetch_remaining = remaining;
+          housekeepingStats.rate_limits.webfetch_triggers += 1;
         }
+
         return originalExecute.apply(toolImpl, args);
       };
       return toolImpl;
@@ -178,7 +217,9 @@ export class ToolRegistry {
         ...webTools,
         ...agentTools,
         ...memoryTools,
+        ...mcpMetaTools,
         ...this.pluginTools,
+        ...this.mcpTools,
       },
       initPromise: Promise.resolve()
     };

@@ -224,23 +224,40 @@ export class CronService {
   public async addJob(params: {
     name: string;
     schedule: CronSchedule;
-    message: string;
+    kind?: 'agent_turn' | 'system_task';
+    message?: string;
     deliver?: boolean;
     channel?: string;
     to?: string;
+    task?: string;
+    taskParams?: Record<string, any>;
     delete_after_run?: boolean;
   }): Promise<CronJob> {
     const store = await this.loadStore();
     const now = nowMs();
+    const kind = params.kind || 'agent_turn';
 
     // Check for duplicates
     const existingJob = store.jobs.find(j => {
       // Compare payload
-      if (j.payload.message !== params.message || 
-          j.payload.channel !== params.channel || 
-          j.payload.to !== params.to) {
-        return false;
+      if (j.payload.kind !== kind) return false;
+
+      if (kind === 'agent_turn') {
+        if (j.payload.kind === 'agent_turn') {
+          if (j.payload.message !== params.message || 
+              j.payload.channel !== params.channel || 
+              j.payload.to !== params.to) {
+            return false;
+          }
+        }
+      } else if (kind === 'system_task') {
+        if (j.payload.kind === 'system_task') {
+           if (j.payload.task !== params.task) {
+             return false;
+           }
+        }
       }
+
       // Compare schedule
       if (j.schedule.kind !== params.schedule.kind) return false;
       
@@ -271,18 +288,29 @@ export class CronService {
       return existingJob;
     }
 
+    let payload: any;
+    if (kind === 'system_task') {
+      payload = {
+        kind: 'system_task',
+        task: params.task || 'unknown_task',
+        params: params.taskParams,
+      };
+    } else {
+      payload = {
+        kind: 'agent_turn',
+        message: params.message || '',
+        deliver: params.deliver || false,
+        channel: params.channel,
+        to: params.to,
+      };
+    }
+
     const job: CronJob = {
       id: uuidv4().substring(0, 8),
       name: params.name,
       enabled: true,
       schedule: params.schedule,
-      payload: {
-        kind: 'agent_turn',
-        message: params.message,
-        deliver: params.deliver || false,
-        channel: params.channel,
-        to: params.to,
-      },
+      payload,
       state: {
         next_run_at_ms: computeNextRun(params.schedule, now),
       },
@@ -299,20 +327,22 @@ export class CronService {
     return job;
   }
 
-  public async removeJob(jobId: string): Promise<boolean> {
+  public async removeJob(id: string): Promise<boolean> {
     const store = await this.loadStore();
-    const beforeCount = store.jobs.length;
-    store.jobs = store.jobs.filter(j => j.id !== jobId);
-    const removed = store.jobs.length < beforeCount;
-
-    if (removed) {
+    const initialLength = store.jobs.length;
+    store.jobs = store.jobs.filter(j => j.id !== id);
+    
+    if (store.jobs.length !== initialLength) {
       await this.saveStore();
+      this.recomputeNextRuns();
       this.armTimer();
-      console.log(`[Cron] Removed job ${jobId}`);
+      console.log(`[Cron] Removed job '${id}'`);
+      return true;
     }
-
-    return removed;
+    
+    return false;
   }
+
 
   public async getStatus() {
     const store = await this.loadStore();

@@ -1,5 +1,4 @@
 import { WechatyBuilder, ScanStatus } from 'wechaty';
-// @ts-expect-error qrcode-terminal lacks types
 import qrcodeTerminal from 'qrcode-terminal';
 import { v4 as uuidv4 } from 'uuid';
 import { Config } from '../core/config.js';
@@ -140,12 +139,12 @@ export class WeChatiPadChannel {
       console.error(e);
     }
 
-    // Listen for outgoing messages from Agent
+    // Listen for outgoing messages from Agent or Cron
     bus.onMessage(async (message) => {
       if (message.target === 'wechat_ipad' && message.content) {
          // Determine recipient
          // We expect metadata to contain the original sender info for replies
-         const toUser = message.metadata?.sender?.id;
+         const toUser = message.metadata?.sender?.id || message.metadata?.to;
          const toRoom = message.metadata?.room?.id;
 
          try {

@@ -68,7 +68,7 @@ async def click_first_result_and_screenshot():
             print(f"页面总高度: {total_height}px")
             
             # 限制最大高度
-            max_height = 8000
+            max_height = 
             if total_height > max_height:
                 print(f"页面过长，限制为 {max_height}px")
                 total_height = max_height

@@ -1,5 +1,5 @@
 import { Config } from '../core/config.js';
-import { SubagentManager } from '../core/subagent.js';
+import type { SubagentManager } from '../core/subagent.js';
 import { MemoryStore } from '../core/memory.js';
 import { SessionManager } from '../core/session.js';
 import { CronService } from '../cron/service.js';

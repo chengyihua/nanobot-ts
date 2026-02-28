@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { generateText, LanguageModelV1 } from 'ai';
+import { streamText, LanguageModelV1 } from 'ai';
 import { MessageBus } from './bus.js';
 import { ToolRegistry } from './tool-registry.js';
 import { Config } from './config.js';
@@ -89,7 +89,7 @@ export class SubagentManager {
 
       const systemPrompt = this.buildSubagentPrompt(task);
 
-      const { text } = await generateText({
+      const result = await streamText({
         model: this.model,
         system: systemPrompt,
         messages: [{ role: 'user', content: task }],
@@ -97,39 +97,88 @@ export class SubagentManager {
         maxSteps: 15,
       });
 
-      console.log(`[Subagent] [${taskId}] completed successfully`);
-
-      // Notify completion
-      this.bus.publish({
-        id: crypto.randomUUID(),
-        source: 'subagent',
-        target: origin.channel, // Send back to origin channel
-        content: `✅ Subagent Task [${label}] Completed:\n\n${text}`,
-        type: 'text',
-        timestamp: Date.now(),
-        metadata: {
-            sessionId: `${origin.channel}:${origin.chatId}`, // Ensure it routes to correct session
-            to: origin.chatId, // Specific recipient
-            taskId,
-            originChannel: origin.channel,
-            originChatId: origin.chatId
-        }
-      });
-
-    } catch (error) {
-      console.error(`[Subagent] [${taskId}] failed:`, error);
+      let fullText = '';
       
-      this.bus.publish({
+      // Stream processing
+      for await (const part of result.fullStream) {
+        if (part.type === 'text-delta') {
+          fullText += part.textDelta;
+          // Optional: Publish streaming updates if needed
+          // For now, we only log to console to avoid flooding the bus for non-streaming clients
+          // But user requested "real-time stream thinking process"
+          // So we publish with a special metadata flag
+          await this.bus.publish({
+            id: crypto.randomUUID(),
+            source: 'subagent',
+            target: origin.channel,
+            content: part.textDelta,
+            type: 'text',
+            timestamp: Date.now(),
+            metadata: {
+              sessionId: `${origin.channel}:${origin.chatId}`,
+              to: origin.chatId,
+              originChannel: origin.channel,
+              originChatId: origin.chatId,
+              subagentId: taskId,
+              stream: true,
+              chunkType: 'text-delta'
+            }
+          });
+        } else if (part.type === 'tool-call') {
+           await this.bus.publish({
+            id: crypto.randomUUID(),
+            source: 'subagent',
+            target: origin.channel,
+            content: `🛠️ Calling tool: ${part.toolName}`,
+            type: 'text',
+            timestamp: Date.now(),
+            metadata: {
+              sessionId: `${origin.channel}:${origin.chatId}`,
+              to: origin.chatId,
+              originChannel: origin.channel,
+              originChatId: origin.chatId,
+              subagentId: taskId,
+              stream: true,
+              chunkType: 'tool-call',
+              toolName: part.toolName
+            }
+          });
+        }
+      }
+
+      console.log(`[Subagent] [${taskId}] completed successfully`);
+      
+      // Send final result
+      await this.bus.publish({
         id: crypto.randomUUID(),
         source: 'subagent',
         target: origin.channel,
-        content: `❌ Subagent Task [${label}] Failed:\n\n${error instanceof Error ? error.message : String(error)}`,
+        content: `✅ Subagent [${label}] completed:\n\n${fullText}`,
         type: 'text',
         timestamp: Date.now(),
         metadata: {
-            sessionId: `${origin.channel}:${origin.chatId}`,
-            to: origin.chatId,
-            taskId
+          sessionId: `${origin.channel}:${origin.chatId}`,
+          to: origin.chatId,
+          originChannel: origin.channel,
+          originChatId: origin.chatId,
+          subagentId: taskId,
+        }
+      });
+    } catch (error: any) {
+      console.error(`[Subagent] [${taskId}] failed:`, error);
+      await this.bus.publish({
+        id: crypto.randomUUID(),
+        source: 'subagent',
+        target: origin.channel,
+        content: `❌ Subagent [${label}] failed: ${error.message || String(error)}`,
+        type: 'text',
+        timestamp: Date.now(),
+        metadata: {
+          sessionId: `${origin.channel}:${origin.chatId}`,
+          to: origin.chatId,
+          originChannel: origin.channel,
+          originChatId: origin.chatId,
+          subagentId: taskId,
         }
       });
     }

@@ -10,13 +10,20 @@ export const CronScheduleSchema = z.object({
 
 export type CronSchedule = z.infer<typeof CronScheduleSchema>;
 
-export const CronPayloadSchema = z.object({
-  kind: z.enum(['agent_turn']).default('agent_turn'),
-  message: z.string(),
-  deliver: z.boolean().default(false),
-  channel: z.string().optional(),
-  to: z.string().optional(),
-});
+export const CronPayloadSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('agent_turn'),
+    message: z.string(),
+    deliver: z.boolean().default(false),
+    channel: z.string().optional(),
+    to: z.string().optional(),
+  }),
+  z.object({
+    kind: z.literal('system_task'),
+    task: z.string(),
+    params: z.record(z.any()).optional(),
+  }),
+]);
 
 export type CronPayload = z.infer<typeof CronPayloadSchema>;
 

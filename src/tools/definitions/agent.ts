@@ -3,7 +3,12 @@ import { z } from 'zod';
 import { ToolOptions } from '../types.js';
 
 export const createAgentTools = (options: ToolOptions) => {
-  const { subagentManager, originChannel, originChatId } = options;
+  const subagentManager = options.subagentManager || options.agentLoop?.subagentManager;
+  const { originChannel, originChatId } = options;
+
+  if (!subagentManager) {
+    console.error('[createAgentTools] SubagentManager is MISSING in options!', Object.keys(options));
+  }
 
   return {
     spawnSubagent: tool({

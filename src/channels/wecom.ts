@@ -24,6 +24,20 @@ export class WeComChannel {
     this.config = config;
   }
 
+  private getProxyAgent(): any {
+    const proxyUrl = this.config.channels?.wecom?.proxy || 
+                     process.env.HTTPS_PROXY || 
+                     process.env.https_proxy || 
+                     process.env.ALL_PROXY || 
+                     process.env.all_proxy;
+                     
+    if (!proxyUrl) return undefined;
+    
+    return proxyUrl.startsWith('socks') 
+      ? new SocksProxyAgent(proxyUrl) 
+      : new HttpsProxyAgent(proxyUrl);
+  }
+
   public async start(app?: express.Application) {
     const wecom = this.config.channels?.wecom;
     if (!wecom || !wecom.enabled) {
@@ -31,8 +45,10 @@ export class WeComChannel {
       return;
     }
     
-    if (wecom.proxy) {
-        this.log.info({ proxy: wecom.proxy }, 'Using proxy');
+    const proxyAgent = this.getProxyAgent();
+    if (proxyAgent) {
+        const proxyUrl = this.config.channels?.wecom?.proxy || process.env.HTTPS_PROXY || 'env-defined';
+        this.log.info({ proxy: proxyUrl }, 'Using proxy');
     }
 
     const server = app || this.app;
@@ -42,6 +58,10 @@ export class WeComChannel {
     const rateHits = new Map<string, { count: number; ts: number }>();
     const RATE_WINDOW_MS = 60_000;
     const RATE_LIMIT = 120;
+
+    // Message Deduplication Cache (MsgId -> Timestamp)
+    const processedMsgIds = new Map<string, number>();
+    const DEDUP_WINDOW_MS = 300_000; // 5 minutes
 
     // Middleware to handle raw body for decryption (apply to shared app or local app)
     // Safe to add globally as it only matches XML content types
@@ -132,6 +152,27 @@ export class WeComChannel {
         const { message } = decrypt(wecom.encoding_aes_key, encryptedMsg);
         const msgResult = await parseStringPromise(message);
         const msg = msgResult.xml;
+        const msgId = msg.MsgId?.[0];
+
+        // Deduplication Check
+        if (msgId) {
+          const lastSeen = processedMsgIds.get(msgId);
+          const now = Date.now();
+          if (lastSeen && now - lastSeen < DEDUP_WINDOW_MS) {
+            this.log.info({ msgId }, 'Duplicate message received (retry), ignoring');
+            return res.send('success');
+          }
+          processedMsgIds.set(msgId, now);
+
+          // Cleanup old entries
+          if (processedMsgIds.size > 1000) {
+            for (const [key, ts] of processedMsgIds.entries()) {
+              if (now - ts > DEDUP_WINDOW_MS) {
+                processedMsgIds.delete(key);
+              }
+            }
+          }
+        }
 
         const fromUser = msg.FromUserName[0];
         const toUser = msg.ToUserName?.[0];
@@ -237,18 +278,30 @@ export class WeComChannel {
 
     // Listen for agent responses
     bus.onMessage(async (message) => {
-      if (['agent', 'subagent'].includes(message.source) && (message.target === 'wecom' || !message.target)) {
-        this.log.debug({ source: message.source, target: message.target }, 'Agent reply received');
+      // Detailed logging for ALL messages on bus to debug flow
+      if (message.target === 'wecom') {
+          this.log.info({ source: message.source, target: message.target, id: message.id }, 'Bus message received for WeCom');
+      }
+
+      if (['agent', 'subagent', 'cron'].includes(message.source) && (message.target === 'wecom' || !message.target)) {
+        // Ignore streaming chunks for WeCom
+        if (message.metadata?.stream) {
+          return;
+        }
+
+        this.log.info({ source: message.source, target: message.target, metadata: message.metadata }, 'Agent reply processing');
         
         const toUser = message.metadata?.fromUser || message.metadata?.to || message.metadata?.originChatId;
         
         if (!toUser) {
-          this.log.warn({ metadata: message.metadata }, 'No recipient found in message metadata');
+          this.log.error({ metadata: message.metadata }, 'No recipient found in message metadata (toUser is empty)');
           return;
         }
 
         const content = message.content;
-        this.log.debug({ toUser, contentPreview: content.substring(0, 50) }, 'Processing outgoing content');
+        this.log.info({ toUser, contentPreview: content.substring(0, 50) }, 'Sending reply to user');
+
+        // ... (rest of logic)
 
         // 优化正则表达式：支持行首空格，增加 m 标志支持多行匹配
         const fileRegex = /^\s*(?:SEND_FILE|SEND_IMAGE|SEND_VOICE):\s*([^\n\r]+)/gim;
@@ -293,6 +346,59 @@ export class WeComChannel {
     });
   }
 
+  private async requestWithRetry(method: 'get' | 'post', url: string, data?: any, config: any = {}): Promise<any> {
+    const agent = this.getProxyAgent();
+    const useProxy = !!agent;
+    
+    // First attempt with proxy (if configured)
+    if (useProxy) {
+      config.httpsAgent = agent;
+      config.proxy = false;
+    }
+
+    try {
+      if (method === 'get') {
+        return await axios.get(url, config);
+      } else {
+        return await axios.post(url, data, config);
+      }
+    } catch (error: any) {
+      // Check if it's a proxy error
+      const isProxyError = useProxy && (
+        error.message?.includes('Proxy connection timed out') ||
+        error.message?.includes('ECONNREFUSED') ||
+        error.message?.includes('socket hang up') || 
+        error.code === 'ECONNRESET' ||
+        error.code === 'ETIMEDOUT'
+      );
+
+      if (isProxyError) {
+        this.log.warn({ err: error.message }, 'Proxy failed, retrying without proxy...');
+        console.warn('[WeCom] Proxy failed, retrying direct connection...');
+        
+        const noProxyConfig = { ...config };
+        delete noProxyConfig.httpsAgent;
+        noProxyConfig.proxy = false; 
+
+        // Important: For FormData, we must refresh the stream because the first stream was consumed
+        if (data instanceof FormData) {
+          this.log.debug('Refilling FormData stream for retry...');
+          // We can't easily "refill" a consumed stream in the generic function without knowing the file path.
+          // So we throw a specific error to let the caller handle the retry with a fresh stream.
+          throw new Error('PROXY_RETRY_NEEDED_FOR_STREAM');
+        }
+        
+        if (method === 'get') {
+          return await axios.get(url, noProxyConfig);
+        } else {
+          return await axios.post(url, data, noProxyConfig);
+        }
+      }
+      
+      throw error;
+    }
+  }
+
   private async getAccessToken(): Promise<string | null> {
     const wecom = this.config.channels?.wecom;
     if (!wecom) return null;
@@ -301,6 +407,7 @@ export class WeComChannel {
       return this.accessToken;
     }
 
+    console.log('[WeCom] Fetching new access token...');
     this.log.debug('Fetching fresh access token...');
     try {
       const config: any = {
@@ -310,26 +417,21 @@ export class WeComChannel {
         },
       };
 
-      if (wecom.proxy) {
-        const agent = wecom.proxy.startsWith('socks') 
-            ? new SocksProxyAgent(wecom.proxy) 
-            : new HttpsProxyAgent(wecom.proxy);
-        config.httpsAgent = agent;
-        config.proxy = false; 
-      }
-
-      const response = await axios.get('https://qyapi.weixin.qq.com/cgi-bin/gettoken', config);
+      const response = await this.requestWithRetry('get', 'https://qyapi.weixin.qq.com/cgi-bin/gettoken', undefined, config);
 
       if (response.data.errcode === 0) {
+        console.log('[WeCom] Access token fetched successfully');
         this.log.info('Access token fetched successfully');
         this.accessToken = response.data.access_token;
         this.tokenExpiresAt = Date.now() + (response.data.expires_in - 300) * 1000;
         return this.accessToken;
       } else {
+        console.error('[WeCom] Error getting access token:', response.data);
         this.log.error({ errcode: response.data.errcode, errmsg: response.data.errmsg }, 'Error getting access token');
         return null;
       }
     } catch (error: any) {
+      console.error('[WeCom] Request error getting access token:', error.message);
       this.log.error({ err: error }, 'Request error getting access token');
       return null;
     }
@@ -349,15 +451,7 @@ export class WeComChannel {
         responseType: 'arraybuffer',
       };
 
-      if (wecom?.proxy) {
-        const agent = wecom.proxy.startsWith('socks') 
-            ? new SocksProxyAgent(wecom.proxy) 
-            : new HttpsProxyAgent(wecom.proxy);
-        config.httpsAgent = agent;
-        config.proxy = false; 
-      }
-
-      const response = await axios.get(`https://qyapi.weixin.qq.com/cgi-bin/media/get`, config);
+      const response = await this.requestWithRetry('get', `https://qyapi.weixin.qq.com/cgi-bin/media/get`, undefined, config);
 
       const workspacePath = getWorkspacePath(this.config);
       const uploadsDir = path.join(workspacePath, 'uploads');
@@ -457,28 +551,39 @@ export class WeComChannel {
       }
 
       const config: any = {};
-      if (wecom.proxy) {
-        const agent = wecom.proxy.startsWith('socks') 
-            ? new SocksProxyAgent(wecom.proxy) 
-            : new HttpsProxyAgent(wecom.proxy);
-        config.httpsAgent = agent;
-        config.proxy = false; 
-      }
-
-      const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, payload, config);
+      const response = await this.requestWithRetry('post', `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, payload, config);
       
       if (response.data.errcode !== 0) {
+        this.log.error({ errcode: response.data.errcode, errmsg: response.data.errmsg, toUser }, 'WeCom Send Error');
+        console.error('[WeCom] Send error:', response.data);
+        if (response.data.errcode === 60020) {
+            const ipMatch = response.data.errmsg.match(/from ip: ([\d.]+)/);
+            const ip = ipMatch ? ipMatch[1] : 'YOUR_IP';
+            this.log.error(`
+================================================================================
+[WECOM ERROR] IP Not Allowed (60020)
+Your current IP address (${ip}) is not in the WeCom allowlist.
+Please add it to the 'Enterprise Trusted IP' list in WeCom Admin Panel.
+Link: https://work.weixin.qq.com/wework_admin/frame#apps
+================================================================================
+`);
+            return false; // Don't retry for IP errors
+        }
+
         this.log.error({ errcode: response.data.errcode, errmsg: response.data.errmsg, msgtype }, 'Send error');
         // 如果 Markdown 发送失败（可能是因为包含了不支持的语法），尝试降级为纯文本发送
         if (msgtype === 'markdown') {
           this.log.warn({ msgtype }, 'Retrying with plain text fallback');
           return await this.sendSingleMessageWithPayload(toUser, content, token, wecom, 'text');
         }
+      } else {
+        this.log.info({ toUser, msgtype }, 'WeCom Send Success');
       }
       
       return response.data.errcode === 0;
     } catch (error: any) {
-      this.log.error({ err: error }, 'Send message error');
+      this.log.error({ err: error, toUser }, 'WeCom Request Error');
+      console.error('[WeCom] Request error:', error.message);
       return false;
     }
   }
@@ -494,15 +599,7 @@ export class WeComChannel {
       };
 
       const config: any = {};
-      if (wecom.proxy) {
-        const agent = wecom.proxy.startsWith('socks') 
-            ? new SocksProxyAgent(wecom.proxy) 
-            : new HttpsProxyAgent(wecom.proxy);
-        config.httpsAgent = agent;
-        config.proxy = false; 
-      }
-
-      const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, payload, config);
+      const response = await this.requestWithRetry('post', `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, payload, config);
       return response.data.errcode === 0;
     } catch (error: any) {
       this.log.error({ err: error, msgtype }, 'Fallback send error');
@@ -545,25 +642,50 @@ export class WeComChannel {
         return null;
       }
 
-      const form = new FormData();
+      let form = new FormData();
       form.append('media', fs.createReadStream(absolutePath));
 
       const wecom = this.config.channels?.wecom;
-      const config: any = {
+      let config: any = {
         headers: form.getHeaders(),
       };
 
-      if (wecom?.proxy) {
-        const agent = wecom.proxy.startsWith('socks') 
-            ? new SocksProxyAgent(wecom.proxy) 
-            : new HttpsProxyAgent(wecom.proxy);
-        config.httpsAgent = agent;
-        config.proxy = false; 
+      let response;
+      try {
+        response = await this.requestWithRetry('post', `https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=${token}&type=${type}`, form, config);
+      } catch (err: any) {
+        // Special handling for stream retry - catch specific error message
+        if (err.message === 'PROXY_RETRY_NEEDED_FOR_STREAM') {
+           this.log.info('Re-creating file stream for direct connection retry...');
+           // Re-create the form and stream
+           form = new FormData();
+           form.append('media', fs.createReadStream(absolutePath));
+           config = {
+             headers: form.getHeaders(),
+             proxy: false // Force direct connection
+           };
+           // Retry directly
+           response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=${token}&type=${type}`, form, config);
+        } else {
+           throw err;
+        }
       }
 
-      const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/media/upload?access_token=${token}&type=${type}`, form, config);
-
       if (response.data.errcode !== 0) {
+        if (response.data.errcode === 60020) {
+            const ipMatch = response.data.errmsg.match(/from ip: ([\d.]+)/);
+            const ip = ipMatch ? ipMatch[1] : 'YOUR_IP';
+            this.log.error(`
+================================================================================
+[WECOM ERROR] IP Not Allowed (60020)
+Your current IP address (${ip}) is not in the WeCom allowlist.
+Please add it to the 'Enterprise Trusted IP' list in WeCom Admin Panel.
+Link: https://work.weixin.qq.com/wework_admin/frame#apps
+================================================================================
+`);
+            return null;
+        }
+
         this.log.error({ response: response.data }, 'Upload error response');
         return null;
       }
@@ -593,15 +715,7 @@ export class WeComChannel {
     if (mediaId) {
       try {
         const config: any = {};
-        if (wecom.proxy) {
-          const agent = wecom.proxy.startsWith('socks') 
-              ? new SocksProxyAgent(wecom.proxy) 
-              : new HttpsProxyAgent(wecom.proxy);
-          config.httpsAgent = agent;
-          config.proxy = false; 
-        }
-
-        const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, {
+        const response = await this.requestWithRetry('post', `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, {
           touser: toUser,
           msgtype: actualType,
           agentid: Number(wecom.agentid),
@@ -624,15 +738,7 @@ export class WeComChannel {
       if (fileMediaId) {
         try {
           const config: any = {};
-          if (wecom.proxy) {
-            const agent = wecom.proxy.startsWith('socks') 
-                ? new SocksProxyAgent(wecom.proxy) 
-                : new HttpsProxyAgent(wecom.proxy);
-            config.httpsAgent = agent;
-            config.proxy = false; 
-          }
-
-          const response = await axios.post(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, {
+          const response = await this.requestWithRetry('post', `https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, {
             touser: toUser,
             msgtype: 'file',
             agentid: Number(wecom.agentid),

@@ -30,15 +30,15 @@ Information about the user to help personalize interactions.
 
 ## Work Context
 
-- **Primary Role**: (your role, e.g., developer, researcher)
-- **Main Projects**: (what you're working on)
-- **Tools You Use**: (IDEs, languages, frameworks)
+- **Primary Role**: Developer / Owner
+- **Main Projects**: Nanobot (Personal AI Assistant)
+- **Tools You Use**: TypeScript, Node.js, WeCom, VS Code, Trae
 
 ## Topics of Interest
 
-- 
-- 
-- 
+- AI Agents
+- Automation
+- Coding
 
 ## Special Instructions
 

@@ -6,6 +6,9 @@ import 'dotenv/config';
 import { loadConfig, saveConfig, getCronStorePath, DEFAULT_CONFIG_PATH, ConfigSchema } from './core/config.js';
 import { bus } from './core/bus.js';
 import { AgentLoop } from './core/agent-loop.js';
+import { ToolRegistry } from './core/tool-registry.js';
+import { MCPClientManager } from './core/mcp/client-manager.js';
+import { SummaryService } from './core/summary/service.js';
 import { CronService } from './cron/service.js';
 import { WeComChannel } from './channels/wecom.js';
 import { QQChannel } from './channels/qq.js';
@@ -71,7 +74,7 @@ program
     if (!config.gateway) config.gateway = { port: 8080, host: '0.0.0.0' };
     config.gateway.port = port;
 
-    if (options.redis) {
+    if (options.redis || config.redis?.enabled) {
       const redisAdapter = new RedisTransportAdapter(config);
       await bus.setAdapter(redisAdapter);
       console.log('🔗 Connected to Redis Message Bus');
@@ -92,26 +95,67 @@ program
       next();
     });
 
+    // Initialize Summary Service
+    const summaryService = new SummaryService(config);
+
     // Initialize Cron Service
     const cronStorePath = getCronStorePath(config);
     const cron = new CronService(cronStorePath, async (job) => {
-      rootLog.info({ job: job.id, name: job.name }, 'Cron triggered');
-      bus.publish({
-        id: Math.random().toString(36).substring(7),
-        source: 'cron',
-        content: job.payload.message,
-        type: 'text',
-        timestamp: Date.now(),
-        metadata: { 
-          sessionId: job.id,
-          jobId: job.id,
-          deliver: job.payload.deliver,
-          channel: job.payload.channel,
-          to: job.payload.to,
-        },
-      });
-      return 'Message published to bus';
+      rootLog.info({ job: job.id, name: job.name, kind: job.payload.kind }, 'Cron triggered');
+
+      if (job.payload.kind === 'system_task') {
+        if (job.payload.task === 'generate_hourly_summary') {
+          await summaryService.generateHourlySummary();
+          return 'Hourly summary generated';
+        }
+        if (job.payload.task === 'generate_daily_summary') {
+          await summaryService.generateDailySummary();
+          return 'Daily summary generated';
+        }
+        return `Unknown system task: ${job.payload.task}`;
+      }
+
+      if (job.payload.kind === 'agent_turn') {
+        bus.publish({
+          id: Math.random().toString(36).substring(7),
+          source: 'cron',
+          target: job.payload.channel, // Explicitly target the channel
+          content: job.payload.message,
+          type: 'text',
+          timestamp: Date.now(),
+          metadata: { 
+            sessionId: job.id,
+            jobId: job.id,
+            deliver: job.payload.deliver,
+            channel: job.payload.channel,
+            to: job.payload.to,
+          },
+        });
+        return 'Message published to bus';
+      }
+      return null;
     });
+
+    // Register default summary jobs
+    try {
+      await cron.addJob({
+        name: 'Hourly Summary',
+        schedule: { kind: 'cron', expr: '0 * * * *' }, // Every hour at :00
+        kind: 'system_task',
+        task: 'generate_hourly_summary',
+        delete_after_run: false
+      });
+
+      await cron.addJob({
+        name: 'Daily Summary',
+        schedule: { kind: 'cron', expr: '0 0 * * *' }, // Every day at 00:00
+        kind: 'system_task',
+        task: 'generate_daily_summary',
+        delete_after_run: false
+      });
+    } catch (err) {
+      rootLog.warn({ err }, 'Failed to register default summary jobs');
+    }
 
     // Listen for updates from agent
     bus.onMessage((message) => {
@@ -123,9 +167,16 @@ program
 
     await cron.start();
 
+    // Initialize MCP Manager
+    const mcpManager = new MCPClientManager(config);
+    await mcpManager.initialize();
+
+    // Initialize Tool Registry
+    const toolRegistry = new ToolRegistry(config, mcpManager);
+
     // Initialize Agent
     if (options.agent) {
-      const agent = new AgentLoop(config, cron);
+      const agent = new AgentLoop(config, cron, undefined, toolRegistry);
       await agent.start();
       console.log('🤖 Agent loop started (Embedded)');
     } else {
@@ -211,24 +262,41 @@ program
 
     const cron = new CronService(cronStorePath, async (job) => {
       console.log(`[Cron] Triggering job: ${job.name}`);
-      bus.publish({
-        id: Math.random().toString(36).substring(7),
-        source: 'cron',
-        content: job.payload.message,
-        type: 'text',
-        timestamp: Date.now(),
-        metadata: { 
-          sessionId: job.id,
-          jobId: job.id,
-          deliver: job.payload.deliver,
-          channel: job.payload.channel,
-          to: job.payload.to,
-          // 确保 Agent 知道这是从哪个渠道触发的定时任务
-          originChannel: job.payload.channel,
-          originChatId: job.payload.to,
-        },
-      });
-      return 'Message published to bus';
+
+      if (job.payload.kind === 'system_task') {
+        const summaryService = new SummaryService(config);
+        if (job.payload.task === 'generate_hourly_summary') {
+          await summaryService.generateHourlySummary();
+          return 'Hourly summary generated';
+        }
+        if (job.payload.task === 'generate_daily_summary') {
+          await summaryService.generateDailySummary();
+          return 'Daily summary generated';
+        }
+        return `Unknown system task: ${job.payload.task}`;
+      }
+
+      if (job.payload.kind === 'agent_turn') {
+        bus.publish({
+          id: Math.random().toString(36).substring(7),
+          source: 'cron',
+          content: job.payload.message,
+          type: 'text',
+          timestamp: Date.now(),
+          metadata: { 
+            sessionId: job.id,
+            jobId: job.id,
+            deliver: job.payload.deliver,
+            channel: job.payload.channel,
+            to: job.payload.to,
+            // 确保 Agent 知道这是从哪个渠道触发的定时任务
+            originChannel: job.payload.channel,
+            originChatId: job.payload.to,
+          },
+        });
+        return 'Message published to bus';
+      }
+      return null;
     }, onCronUpdate);
 
     // Only start cron execution if we are NOT in daemon mode and NOT disabling services
@@ -236,8 +304,15 @@ program
       await cron.start();
     }
 
+    // Initialize MCP Manager
+    const mcpManager = new MCPClientManager(config);
+    await mcpManager.initialize();
+
+    // Initialize Tool Registry
+    const toolRegistry = new ToolRegistry(config, mcpManager);
+
     // Initialize Agent
-    const agent = new AgentLoop(config, cron);
+    const agent = new AgentLoop(config, cron, undefined, toolRegistry);
     await agent.start();
 
     if (options.daemon) {
@@ -283,8 +358,12 @@ program
     if (options.message) {
       // Single message mode
       bus.onMessage((message) => {
-        if (message.source === 'agent' && message.metadata?.sessionId === options.session) {
-          console.log(`Nanobot > ${message.content}`);
+        if ((message.source === 'agent' || message.source === 'subagent') && message.metadata?.sessionId === options.session) {
+          if (message.metadata?.stream) {
+            process.stdout.write(message.content);
+            return;
+          }
+          console.log(`\nNanobot > ${message.content}`);
           // If we are running services, we might not want to exit immediately
           if (!options.services) process.exit(0);
         }
@@ -312,7 +391,11 @@ program
       });
 
       bus.onMessage((message) => {
-        if (message.source === 'agent') {
+        if (message.source === 'agent' || message.source === 'subagent') {
+          if (message.metadata?.stream) {
+            process.stdout.write(message.content);
+            return;
+          }
           const isCron = message.metadata?.jobId !== undefined;
           const prefix = isCron ? `[Cron Response: ${message.metadata?.jobId}] ` : '';
           console.log(`\n${prefix}Nanobot > ${message.content}`);
@@ -396,7 +479,11 @@ cronCmd
     jobs.forEach(job => {
       const nextRun = job.state.next_run_at_ms ? new Date(job.state.next_run_at_ms).toLocaleString() : 'N/A';
       console.log(`- [${job.id}] ${job.name} (Next: ${nextRun})`);
-      console.log(`  Message: ${job.payload.message}`);
+      if (job.payload.kind === 'system_task') {
+        console.log(`  Task: ${job.payload.task}`);
+      } else {
+        console.log(`  Message: ${job.payload.message}`);
+      }
     });
   });
 

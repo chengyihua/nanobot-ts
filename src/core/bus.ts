@@ -1,21 +1,7 @@
 import { EventEmitter } from 'events';
+import type { Message, TransportAdapter } from './bus-types.js';
 
-export interface Message {
-  id: string;
-  source: string;
-  target?: string;
-  content: string;
-  type: 'text' | 'image' | 'file';
-  timestamp: number;
-  metadata?: Record<string, any>;
-}
-
-export interface TransportAdapter {
-  publish(message: Message): Promise<void>;
-  subscribe(handler: (message: Message) => void): void;
-  connect(): Promise<void>;
-  disconnect(): Promise<void>;
-}
+export type { Message, TransportAdapter };
 
 export class MemoryTransportAdapter implements TransportAdapter {
   private inboundQueue: Message[] = [];

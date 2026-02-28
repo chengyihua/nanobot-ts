@@ -175,8 +175,8 @@ export const AgentDefaultsSchema = z.object({
   model: z.string().default('anthropic/claude-3-5-sonnet-20240620'),
   max_tokens: z.number().default(8192),
   temperature: z.number().default(0.7),
-  max_iterations: z.number().default(20),
-  timeout_ms: z.number().default(300000), // Default 5 minutes
+  max_iterations: z.number().default(100),
+  timeout_ms: z.number().default(600000), // Default 10 minutes
 });
 
 export const AgentsConfigSchema = z.object({
@@ -219,6 +219,7 @@ export const GatewayConfigSchema = z.object({
 
 // Redis
 export const RedisConfigSchema = z.object({
+  enabled: z.boolean().default(false),
   host: z.string().default('localhost'),
   port: z.number().default(6379),
   password: z.string().optional(),
@@ -228,6 +229,8 @@ export const RedisConfigSchema = z.object({
 // Tools
 export const WebSearchConfigSchema = z.object({
   api_key: z.string().default(''),
+  tavily_api_key: z.string().default(''),
+  jina_api_key: z.string().default(''),
   max_results: z.number().default(5),
 });
 
@@ -269,6 +272,18 @@ export const ToolsConfigSchema = z.object({
   history_max_tool_msgs: z.number().default(12),
 });
 
+// MCP (Model Context Protocol)
+export const MCPServerConfigSchema = z.object({
+  command: z.string(),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string(), z.string()).default({}),
+  disabled: z.boolean().default(false),
+});
+
+export const MCPConfigSchema = z.object({
+  servers: z.record(z.string(), MCPServerConfigSchema).default({}),
+});
+
 // Behavior (Refactored hardcoded values)
 export const BehaviorConfigSchema = z.object({
   stop_keywords: z.array(z.string()).default(['停止', 'stop', 'cancel', 'abort', '别做了', '停下']),
@@ -281,6 +296,7 @@ export const ConfigSchema = z.object({
   providers: ProvidersConfigSchema.default({} as any),
   gateway: GatewayConfigSchema.default({} as any),
   redis: RedisConfigSchema.default({} as any),
+  mcp: MCPConfigSchema.default({} as any),
   tools: ToolsConfigSchema.default({} as any),
   heartbeat: HeartbeatConfigSchema.default({} as any),
   housekeeping: HousekeepingConfigSchema.default({} as any),

@@ -8,9 +8,14 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
 // Helper to determine proxy and create fetch implementation
-export const createProxyFetch = (config: Config) => {
-  const proxyUrl = config.channels?.wecom?.proxy || 
-                   process.env.HTTPS_PROXY || 
+export const createProxyFetch = (config: Config, options?: { bypassProxy?: boolean }) => {
+  // If bypassProxy is requested, we skip proxy detection and just use direct fetch (with logging)
+  if (options?.bypassProxy) {
+    console.log('[Registry] Proxy bypass requested for this provider.');
+    return createLoggingFetch(undefined); // undefined agent = direct connection
+  }
+
+  const proxyUrl = process.env.HTTPS_PROXY || 
                    process.env.https_proxy || 
                    process.env.ALL_PROXY || 
                    process.env.all_proxy;
@@ -21,90 +26,29 @@ export const createProxyFetch = (config: Config) => {
       ? new SocksProxyAgent(proxyUrl) 
       : new HttpsProxyAgent(proxyUrl);
       
-    return async (url: any, init: any) => {
-      const requestId = Math.random().toString(36).substring(7);
-      console.log(`[Registry:${requestId}] Fetching URL via proxy: ${url}`);
-      // console.log(`[Registry:${requestId}] Headers:`, JSON.stringify(init?.headers));
-      
-      try {
-        // Set a default timeout of 120s (2 minutes) for slow proxies/models
-        const timeout = init?.timeout || 120000;
-        const options = { ...init, agent, timeout };
-        
-        console.log(`[Registry:${requestId}] calling nodeFetch with timeout ${timeout}ms...`);
-        const response = await nodeFetch(url, options);
-        console.log(`[Registry:${requestId}] Fetch completed: ${url} (Status: ${response.status})`);
-        
-        // Wrap the response.json() and response.text() to log when body is read
-        const originalJson = response.json.bind(response);
-        response.json = async () => {
-            console.log(`[Registry:${requestId}] Reading JSON body...`);
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Body read timeout')), 60000));
-            const data = await Promise.race([originalJson(), timeoutPromise]);
-            console.log(`[Registry:${requestId}] JSON body read (${JSON.stringify(data).length} chars)`);
-            return data;
-        };
-        
-        // Also wrap text() just in case
-        const originalText = response.text.bind(response);
-        response.text = async () => {
-            console.log(`[Registry:${requestId}] Reading text body...`);
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Body read timeout')), 60000));
-            const data: any = await Promise.race([originalText(), timeoutPromise]);
-            console.log(`[Registry:${requestId}] Text body read (${data.length} chars)`);
-            return data as string;
-        };
-
-        return response;
-      } catch (error: any) {
-        if (error.type === 'request-timeout' || error.message.includes('timeout')) {
-             console.error(`[Registry:${requestId}] Fetch timed out after ${init?.timeout || 120000}ms for ${url}`);
-        }
-        console.error(`[Registry:${requestId}] Fetch error for ${url}:`, error.message);
-        throw error;
-      }
-    };
+    return createLoggingFetch(agent);
   }
   
-  // No proxy configured, but we still want the timeout and logging wrapper!
-  // Otherwise default fetch has no timeout and we can't debug body reads.
+  // No proxy configured
   console.log('[Registry] No proxy configured, using default fetch with wrappers.');
-  
+  return createLoggingFetch(undefined);
+};
+
+// Internal helper to wrap node-fetch with logging and timeout
+const createLoggingFetch = (agent: any) => {
   return async (url: any, init: any) => {
     const requestId = Math.random().toString(36).substring(7);
-    console.log(`[Registry:${requestId}] Fetching URL (direct): ${url}`);
+    const isDirect = !agent;
+    console.log(`[Registry:${requestId}] Fetching URL (${isDirect ? 'direct' : 'proxy'}): ${url}`);
     
     try {
       const timeout = init?.timeout || 120000;
-      // const controller = new AbortController();
-      // const timeoutId = setTimeout(() => controller.abort(), timeout);
-      // const signal = init?.signal ? anySignal([init.signal, controller.signal]) : controller.signal; 
-      // Note: node-fetch supports 'timeout' option directly, simpler than AbortController
-      
-      const options = { ...init, timeout };
+      const options = { ...init, agent, timeout };
       
       console.log(`[Registry:${requestId}] calling nodeFetch with timeout ${timeout}ms...`);
       const response = await nodeFetch(url, options);
       console.log(`[Registry:${requestId}] Fetch completed: ${url} (Status: ${response.status})`);
       
-      const originalJson = response.json.bind(response);
-      response.json = async () => {
-          console.log(`[Registry:${requestId}] Reading JSON body...`);
-          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Body read timeout')), 60000));
-          const data = await Promise.race([originalJson(), timeoutPromise]);
-          console.log(`[Registry:${requestId}] JSON body read (${JSON.stringify(data).length} chars)`);
-          return data;
-      };
-      
-      const originalText = response.text.bind(response);
-      response.text = async () => {
-          console.log(`[Registry:${requestId}] Reading text body...`);
-          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Body read timeout')), 60000));
-          const data: any = await Promise.race([originalText(), timeoutPromise]);
-          console.log(`[Registry:${requestId}] Text body read (${data.length} chars)`);
-          return data as string;
-      };
-
       return response;
     } catch (error: any) {
       if (error.type === 'request-timeout' || error.message.includes('timeout')) {
@@ -120,14 +64,20 @@ export const createProxyFetch = (config: Config) => {
 const createOpenAICompatible = (
   providerName: keyof Config['providers'],
   defaultBaseURL?: string,
-  apiKeyEnvVar?: string
+  apiKeyEnvVar?: string,
+  bypassProxy: boolean = false
 ) => {
   return (modelId: string, config: Config): LanguageModelV1 => {
     const providerConfig = config.providers[providerName] as any;
     const apiKey = providerConfig?.api_key || (apiKeyEnvVar ? process.env[apiKeyEnvVar] : undefined) || '';
     const baseURL = providerConfig?.api_base || defaultBaseURL;
     
-    const fetchImplementation = createProxyFetch(config);
+    console.log(`[Registry] Creating ${providerName} provider for model ${modelId}`);
+    console.log(`[Registry] Base URL: ${baseURL}`);
+    
+    // Check if we should bypass proxy (either forced by provider spec, or configured in provider config)
+    // We don't have 'bypass_proxy' in config schema yet, so we rely on the argument.
+    const fetchImplementation = createProxyFetch(config, { bypassProxy });
 
     const provider = createOpenAI({
       apiKey,
@@ -178,7 +128,7 @@ export const PROVIDERS: ProviderSpec[] = [
     name: 'deepseek',
     displayName: 'DeepSeek',
     keywords: ['deepseek'],
-    createModel: createOpenAICompatible('deepseek', 'https://api.deepseek.com', 'DEEPSEEK_API_KEY')
+    createModel: createOpenAICompatible('deepseek', 'https://api.deepseek.com', 'DEEPSEEK_API_KEY', true)
   },
 
   // Moonshot (Kimi)
@@ -186,7 +136,7 @@ export const PROVIDERS: ProviderSpec[] = [
     name: 'moonshot',
     displayName: 'Moonshot',
     keywords: ['moonshot', 'kimi'],
-    createModel: createOpenAICompatible('moonshot', 'https://api.moonshot.cn/v1', 'MOONSHOT_API_KEY')
+    createModel: createOpenAICompatible('moonshot', 'https://api.moonshot.cn/v1', 'MOONSHOT_API_KEY', true)
   },
 
   // DashScope (Qwen)
@@ -194,7 +144,7 @@ export const PROVIDERS: ProviderSpec[] = [
     name: 'dashscope',
     displayName: 'DashScope',
     keywords: ['dashscope', 'qwen'],
-    createModel: createOpenAICompatible('dashscope', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'DASHSCOPE_API_KEY')
+    createModel: createOpenAICompatible('dashscope', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 'DASHSCOPE_API_KEY', true)
   },
 
   // Zhipu (GLM)
@@ -202,7 +152,7 @@ export const PROVIDERS: ProviderSpec[] = [
     name: 'zhipu',
     displayName: 'Zhipu AI',
     keywords: ['zhipu', 'glm', 'zai'],
-    createModel: createOpenAICompatible('zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'ZHIPUAI_API_KEY')
+    createModel: createOpenAICompatible('zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'ZHIPUAI_API_KEY', true)
   },
 
   // Groq
@@ -246,6 +196,8 @@ export const PROVIDERS: ProviderSpec[] = [
  */
 export function createModel(modelId: string, config: Config): LanguageModelV1 {
   const lowId = modelId.toLowerCase();
+  
+  console.log(`[Registry] Resolving model: ${modelId}`);
 
   // 1. Explicit Provider Prefix (e.g. "anthropic:claude-3-5-sonnet")
   if (modelId.includes(':')) {
@@ -269,6 +221,8 @@ export function createModel(modelId: string, config: Config): LanguageModelV1 {
   console.log(`[Registry] No matching provider found for ${modelId}, falling back to OpenAI.`);
   const openaiSpec = PROVIDERS.find(p => p.name === 'openai');
   if (openaiSpec) {
+    // If falling back to OpenAI, we should check if the model ID looks like a DeepSeek/Moonshot/etc model
+    // that accidentally fell through. But if it truly falls back, it will use OpenAI's API URL.
     return openaiSpec.createModel(modelId, config);
   }
 

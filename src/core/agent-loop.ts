@@ -7,7 +7,8 @@ import { Config, getWorkspacePath, loadConfig } from './config.js';
 import { ContextBuilder } from './context.js';
 import { sessionManager, SessionManager } from './session.js';
 import { ToolRegistry } from './tool-registry.js';
-import { bus, Message } from './bus.js';
+import { bus } from './bus.js';
+import type { Message } from './bus.js';
 import { SubagentManager } from './subagent.js';
 import { MemoryStore } from './memory.js';
 import { CronService } from '../cron/service.js';
@@ -18,6 +19,8 @@ import { SafetyGuard } from './safety-guard.js';
 import { createLogger } from '../utils/logger.js';
 import { agentMetrics } from './metrics.js';
 import { cleanupUploads, recordSessionsCleanup } from '../utils/cleanup.js';
+import { ContextManager } from './agent/context-manager.js';
+import { StepExecutor } from './agent/step-executor.js';
 
 export class AgentLoop {
   private config: Config;
@@ -28,16 +31,15 @@ export class AgentLoop {
   private messageAggregator: MessageAggregator;
   private safetyGuard: SafetyGuard;
   private toolRegistry: ToolRegistry;
+  private contextManager: ContextManager;
+  private stepExecutor: StepExecutor;
   private log = createLogger('agent-loop');
 
   private currentModelId: string | null = null;
   private sessionLocks: Map<string, Promise<void>> = new Map();
+  private sessionLockTimestamps: Map<string, number> = new Map(); // Track when lock was acquired
   private sessionAbortControllers: Map<string, AbortController> = new Map();
   private metrics = agentMetrics;
-  private toolConcurrency: number;
-  private toolResultLimit: number;
-  private historyUserLimit: number;
-  private historyToolLimit: number;
 
   constructor(config: Config, cronService?: CronService, sessionMgr?: SessionManager, toolRegistry?: ToolRegistry) {
     this.config = config;
@@ -46,282 +48,13 @@ export class AgentLoop {
     this.safetyGuard = new SafetyGuard(config);
     this.messageAggregator = new MessageAggregator(this.handleAggregatedMessage.bind(this));
     this.toolRegistry = toolRegistry || new ToolRegistry(config);
-
-    // Config-driven knobs with sane fallbacks
-    this.toolConcurrency = Number(this.config.tools?.tool_concurrency ?? 3);
-    this.toolResultLimit = Number(this.config.tools?.tool_result_maxchars ?? 4000);
-    this.historyUserLimit = Number(this.config.tools?.history_max_user_msgs ?? 12);
-    this.historyToolLimit = Number(this.config.tools?.history_max_tool_msgs ?? 12);
+    this.contextManager = new ContextManager(config);
+    this.stepExecutor = new StepExecutor(config);
   }
 
-  private sanitizeHistory(history: any[], isFinalForLLM: boolean = false) {
-    const result: any[] = [];
-    for (let i = 0; i < history.length; i++) {
-      const msg = history[i];
 
-      if (msg.role === 'assistant') {
-        let toolCalls: any[] = [];
 
-        if (Array.isArray(msg.content)) {
-          toolCalls = msg.content.filter((c: any) => (c as any).type === 'tool-call');
-        } else if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
-          // Normalize OpenAI format to Vercel AI SDK format for consistent processing
-          toolCalls = msg.tool_calls.map((tc: any) => ({
-            type: 'tool-call',
-            toolCallId: tc.id,
-            toolName: tc.function.name,
-            args: typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments
-          }));
-        }
 
-        const hasToolCalls = toolCalls.length > 0;
-
-        if (hasToolCalls) {
-          // 查找后续是否有 tool 消息
-          let hasFollowingTool = false;
-          for (let j = i + 1; j < history.length; j++) {
-            if (history[j].role === 'tool') {
-              hasFollowingTool = true;
-              break;
-            }
-            if (history[j].role === 'assistant' || history[j].role === 'user') {
-              // 遇到了非 tool 消息，说明配对中断了
-              break;
-            }
-          }
-
-          if (hasFollowingTool) {
-            result.push(msg);
-          } else if (!isFinalForLLM) {
-            // 如果不是最终发送给 LLM，允许暂时没有 tool 结果
-            result.push(msg);
-          } else {
-            // 最终发送给 LLM 时，如果没有 tool 结果，为了保持连贯性，我们尝试填充一个占位结果
-            // 但是如果这是最后一条消息（即刚刚生成了 tool call 但还没执行），我们不能填充，而是应该保留它
-            // 以便 LLM 知道它刚才想调用什么（或者被 context builder 处理）
-            // 实际上，如果最后一条是 assistant tool call，那么我们应该把这个 tool call 删除，或者填充错误信息
-            // 否则 LLM 会报错 "insufficient tool messages"
-
-            // 检查这是否是历史记录中的最后一条消息
-            const isLastMessage = i === history.length - 1;
-
-            if (isLastMessage) {
-              // 如果是最后一条，且我们正在准备发给 LLM，说明上一轮意外中断了。
-              // 我们必须填充一个错误结果，告诉 LLM 上一次调用失败了，请重试或继续。
-              const toolNames = toolCalls.map((tc: any) => tc.toolName).join(', ');
-              this.log.warn({ toolNames, index: i }, 'Found interrupted assistant tool-call; filling error result to recover');
-
-              result.push(msg);
-              const placeholderResults = toolCalls.map((tc: any) => ({
-                type: 'tool-result',
-                toolCallId: tc.toolCallId,
-                toolName: tc.toolName,
-                result: "System Error: The previous tool execution was interrupted or timed out. Please retry if necessary.",
-                isError: true
-              }));
-              result.push({
-                role: 'tool',
-                content: placeholderResults
-              });
-            } else {
-              // 如果不是最后一条，中间断层了，同样需要填充
-              const toolNames = toolCalls.map((tc: any) => tc.toolName).join(', ');
-              this.log.warn({ toolNames, index: i }, 'Found incomplete assistant tool-call; filling placeholder to preserve memory');
-
-              result.push(msg);
-              const placeholderResults = toolCalls.map((tc: any) => ({
-                type: 'tool-result',
-                toolCallId: tc.toolCallId,
-                toolName: tc.toolName,
-                result: "Error: Result lost or skipped in previous turn.",
-                isError: true
-              }));
-              result.push({
-                role: 'tool',
-                content: placeholderResults
-              });
-            }
-          }
-        } else {
-          result.push(msg);
-        }
-      } else if (msg.role === 'tool') {
-        // 确保 tool 消息前面有配对的 assistant
-        const lastMsg = result[result.length - 1];
-        const lastHasTC = lastMsg && lastMsg.role === 'assistant' && (
-          (Array.isArray(lastMsg.content) && lastMsg.content.some((c: any) => (c as any).type === 'tool-call')) ||
-          (lastMsg.tool_calls && Array.isArray(lastMsg.tool_calls) && lastMsg.tool_calls.length > 0)
-        );
-        if (lastHasTC) {
-          result.push(msg);
-        } else {
-          this.log.warn({ index: i }, 'Removing orphaned tool result');
-          continue;
-        }
-      } else {
-        result.push(msg);
-      }
-    }
-    return result;
-  }
-
-  /**
-   * Trim历史，限制用户消息和工具结果的数量，防止上下文爆炸。
-   * 采用“跳过”策略：超出配额的旧消息会被丢弃，其余保持顺序。
-   */
-  private trimHistory(history: any[]) {
-    if (!history || history.length === 0) return history;
-
-    const maxUsers = Math.max(0, this.historyUserLimit);
-    const maxTools = Math.max(0, this.historyToolLimit);
-
-    let userCount = 0;
-    let toolCount = 0;
-    const kept: any[] = [];
-
-    for (let i = history.length - 1; i >= 0; i--) {
-      const msg = history[i];
-      if (msg.role === 'user') {
-        if (userCount >= maxUsers) continue;
-        userCount++;
-      } else if (msg.role === 'tool') {
-        if (toolCount >= maxTools) continue;
-        toolCount++;
-      }
-      kept.push(msg);
-    }
-
-    return kept.reverse();
-  }
-
-  /**
-   * 裁剪工具输出，避免长文本填满上下文。
-   */
-  private truncateToolResult(result: any) {
-    const limit = this.toolResultLimit;
-    if (!limit || limit <= 0 || result === null || result === undefined) return result;
-
-    const truncateString = (val: string) => {
-      if (val.length <= limit) return val;
-      const head = val.slice(0, Math.floor(limit * 0.6));
-      const tail = val.slice(-Math.floor(limit * 0.3));
-      const skipped = val.length - head.length - tail.length;
-      return `${head}\n...\n${tail}\n[truncated ${skipped} chars]`;
-    };
-
-    if (typeof result === 'string') {
-      return truncateString(result);
-    }
-
-    if (Array.isArray(result)) {
-      return result.map((item) => (typeof item === 'string' ? truncateString(item) : item));
-    }
-
-    if (typeof result === 'object') {
-      // 1) 若存在标准输出字段，优先摘要
-      const keys = Object.keys(result);
-      const outputKey = keys.find(k => ['stdout', 'content', 'output', 'text'].includes(k));
-      if (outputKey && typeof (result as any)[outputKey] === 'string') {
-        const copy = { ...result };
-        copy[outputKey] = truncateString((result as any)[outputKey]);
-        return copy;
-      }
-      // 2) 默认逐字段截断字符串
-      const copy: any = Array.isArray(result) ? [] : { ...result };
-      for (const key of keys) {
-        const val = (result as any)[key];
-        copy[key] = typeof val === 'string' ? truncateString(val) : val;
-      }
-      return copy;
-    }
-
-    return result;
-  }
-
-  private async executeTools(
-    toolCalls: any[],
-    tools: any,
-    currentHistory: any[],
-    abortSignal?: AbortSignal,
-    sessionId?: string,
-    requestId?: string
-  ): Promise<{ results: any[], missing: any[] }> {
-    const toolResults: any[] = [];
-    const pendingToolCalls = [...toolCalls];
-
-    this.log.debug({ sessionId, requestId, toolCount: toolCalls.length, tools: toolCalls.map(tc => tc.toolName) }, 'Preparing to execute tools');
-
-    // Parallel execution logic
-    const batches = [] as any[];
-    for (let i = 0; i < toolCalls.length; i += this.toolConcurrency) {
-      batches.push(toolCalls.slice(i, i + this.toolConcurrency));
-    }
-
-    for (const batch of batches) {
-      const batchPromises = batch.map(async (toolCall: any) => {
-        if (abortSignal?.aborted) return null;
-
-        this.log.debug({ tool: toolCall.toolName }, 'Starting tool call');
-        const tool = (tools as any)[toolCall.toolName];
-        if (tool) {
-        try {
-          const startTime = Date.now();
-          const toolResult = await tool.execute(toolCall.args, {
-            toolCallId: toolCall.toolCallId,
-            messages: currentHistory,
-            abortSignal: abortSignal
-          });
-          const duration = Date.now() - startTime;
-          this.log.debug({ tool: toolCall.toolName, duration }, 'Finished tool call');
-
-          const safeResult = this.truncateToolResult(toolResult);
-
-          return {
-            type: 'tool-result',
-            toolCallId: toolCall.toolCallId,
-            toolName: toolCall.toolName,
-            result: safeResult,
-          };
-        } catch (err: any) {
-          this.log.error({ tool: toolCall.toolName, err }, 'Tool execution error');
-          return {
-            type: 'tool-result',
-            toolCallId: toolCall.toolCallId,
-            toolName: toolCall.toolName,
-            result: `Error: ${err.message}`,
-            isError: true,
-          };
-        }
-      } else {
-        this.log.warn({ tool: toolCall.toolName }, 'Tool not found');
-        return {
-          type: 'tool-result',
-          toolCallId: toolCall.toolCallId,
-          toolName: toolCall.toolName,
-          result: `Error: Tool "${toolCall.toolName}" not found.`,
-          isError: true,
-        };
-        }
-      });
-
-      const results = await Promise.all(batchPromises);
-      const validResults = results.filter(r => r !== null);
-      toolResults.push(...validResults);
-    }
-
-    const completedIds = new Set(toolResults.map(r => r.toolCallId));
-    const missingResults = pendingToolCalls
-      .filter(tc => !completedIds.has(tc.toolCallId))
-      .map(tc => ({
-        type: 'tool-result',
-        toolCallId: tc.toolCallId,
-        toolName: tc.toolName,
-        result: "Error: Task interrupted or aborted before execution.",
-        isError: true
-      }));
-
-    return { results: toolResults, missing: missingResults };
-  }
 
   public async start() {
     this.log.info('Loop started. Waiting for messages...');
@@ -454,9 +187,33 @@ export class AgentLoop {
     // 消息处理队列锁
     // 如果当前有任务在运行，我们等待它完成（除非被上述逻辑强制中断）
     // 使用 Promise 链实现简单的队列
-    const currentLock = this.sessionLocks.get(sessionId) || Promise.resolve();
+    const currentLock = this.sessionLocks.get(sessionId);
+    const lockTimestamp = this.sessionLockTimestamps.get(sessionId) || 0;
+    
+    // Check for stale lock (e.g. held for more than 5 minutes)
+    const LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+    const isStale = currentLock && (Date.now() - lockTimestamp > LOCK_TIMEOUT_MS);
 
-    const nextTask = currentLock.then(async () => {
+    if (isStale) {
+        this.log.warn({ sessionId, lockTimestamp }, 'Stale session lock detected, forcing reset');
+        // Force reset the lock
+        this.sessionLocks.delete(sessionId);
+        this.sessionLockTimestamps.delete(sessionId);
+        
+        // Also abort any running controller
+        const controller = this.sessionAbortControllers.get(sessionId);
+        if (controller) {
+             controller.abort();
+             this.sessionAbortControllers.delete(sessionId);
+        }
+    } else if (currentLock) {
+      this.log.info({ sessionId }, 'Session is busy, queuing new message...');
+    }
+
+    const nextTask = (this.sessionLocks.get(sessionId) || Promise.resolve()).then(async () => {
+      this.log.info({ sessionId, requestId }, 'Acquired session lock, starting processing');
+      this.sessionLockTimestamps.set(sessionId, Date.now()); // Update timestamp
+      
       // 在开始处理前，我们不再手动检查去重，而是依赖 handleMessage 内部的状态隔离
       // 每一条排队的消息都会触发一次 handleMessage，读取当时的完整历史
 
@@ -473,12 +230,39 @@ export class AgentLoop {
           this.log.warn({ sessionId }, 'Task aborted for session');
         } else {
           this.log.error({ sessionId, err: error }, 'Error in task');
+          
+          // Attempt to send error message to user via bus
+          try {
+             const channel = aggregatedMessage.metadata?.originChannel || aggregatedMessage.source || 'cli';
+             const chatId = aggregatedMessage.metadata?.originChatId || aggregatedMessage.metadata?.fromUser || 'default';
+             bus.publish({
+                id: Math.random().toString(36).substring(7),
+                source: 'agent',
+                target: channel,
+                content: `I encountered an error processing your request: ${error.message || 'Unknown error'}`,
+                type: 'text',
+                timestamp: Date.now(),
+                metadata: {
+                  ...aggregatedMessage.metadata,
+                  sessionId,
+                  requestId,
+                  to: aggregatedMessage.metadata?.to || chatId
+                },
+            });
+          } catch (pubErr) {
+             this.log.error({ err: pubErr }, 'Failed to publish error message');
+          }
         }
       } finally {
         // 只有当当前的 controller 仍然是这一个时才删除
         if (this.sessionAbortControllers.get(sessionId) === controller) {
           this.sessionAbortControllers.delete(sessionId);
         }
+        
+        // Clear lock timestamp if this was the last task
+        // Actually we can't easily know if it's the last task without checking lock equality,
+        // but since we update timestamp on start, it's fine.
+        // We could delete timestamp if queue is empty, but not critical.
       }
     }).catch(err => {
       this.log.error({ sessionId, err }, 'Queue error');
@@ -530,6 +314,7 @@ export class AgentLoop {
           this.toolRegistry
         );
         this.log.info({ sessionId }, 'Reload successful');
+
         bus.publish({
           id: Math.random().toString(36).substring(7),
           source: 'agent',
@@ -541,6 +326,12 @@ export class AgentLoop {
         });
       } catch (error: any) {
         this.log.error({ sessionId, err: error }, 'Reload failed');
+        
+        // Don't send error message if it's just an abort (though reload rarely aborts)
+        if (error.name === 'AbortError' || error.message?.includes('aborted')) {
+          return;
+        }
+
         bus.publish({
           id: Math.random().toString(36).substring(7),
           source: 'agent',
@@ -563,17 +354,17 @@ export class AgentLoop {
       // 2. 清除会话历史 (内存缓存 + 磁盘文件)
       await this.sessionManager.clearSession(sessionId);
 
-        bus.publish({
-          id: Math.random().toString(36).substring(7),
-          source: 'agent',
-          target: channel,
-          content: '🔄 会话已重置。历史记录已清除，内存缓存已刷新。',
-          type: 'text',
-          timestamp: Date.now(),
-          metadata: { ...message.metadata, sessionId, requestId, to: message.metadata?.to || chatId },
-        });
-        return;
-      }
+      bus.publish({
+        id: Math.random().toString(36).substring(7),
+        source: 'agent',
+        target: channel,
+        content: '🔄 会话已重置。历史记录已清除，内存缓存已刷新。',
+        type: 'text',
+        timestamp: Date.now(),
+        metadata: { ...message.metadata, sessionId, requestId, to: message.metadata?.to || chatId },
+      });
+      return;
+    }
   }
 
   private async runAgentLoop(
@@ -594,6 +385,7 @@ export class AgentLoop {
     let finalContent = '';
     const accumulatedText = '';
     let summaryText = '';
+    let lastPublishedText = '';
     const accumulatedDirectives = new Set<string>();
     const allToolResults: any[] = [];
     let consecutiveToolErrors = 0;
@@ -601,32 +393,50 @@ export class AgentLoop {
     let currentHistory = initialHistory;
 
     // Initial sanitization
-    currentHistory = this.sanitizeHistory(currentHistory, true);
+    currentHistory = this.contextManager.sanitizeHistory(currentHistory, true);
 
     let toolsUsed: string[] = [];
 
     try {
       const model = this.getModel();
-      const maxIterations = this.config.agents.defaults.max_iterations || 15;
+      // Use config default (now 100) or fallback to 100 if missing
+      const maxIterations = this.config.agents.defaults.max_iterations || 100;
       const maxTokens = this.config.agents.defaults.max_tokens || 8192;
-      // Default loop timeout from config (default 5 min)
-      const loopTimeoutMs = this.config.agents.defaults.timeout_ms || 300000;
-      const budgetElapsed = () => Date.now() - startedAt > loopTimeoutMs;
+      // Default loop timeout from config (default 10 min)
+      const loopTimeoutMs = this.config.agents.defaults.timeout_ms || 600000;
+      // Sliding window check: checks if time since last activity exceeds timeout, OR total time exceeds a hard limit (e.g. 30 min)
+      let lastActivityTime = Date.now();
+      const budgetElapsed = () => {
+        const now = Date.now();
+        // 1. Sliding window timeout (stalled)
+        if (now - lastActivityTime > loopTimeoutMs) return true;
+        // 2. Hard total limit (3x timeout) to prevent infinite loops even with activity
+        if (now - startedAt > loopTimeoutMs * 3) return true;
+        return false;
+      };
 
       this.log.info({ requestId, sessionId, tools: Object.keys(tools).length }, 'Calling LLM (manual loop)');
 
+      // Loop detection state
+      const recentToolCalls: string[] = [];
+      const MAX_REPEAT_HISTORY = 5;
+
       while (iteration < maxIterations) {
+        // Update activity timestamp at start of each iteration
+        lastActivityTime = Date.now();
+
         if (abortSignal?.aborted) {
           throw new Error('AbortError');
         }
         if (budgetElapsed()) {
-          this.log.warn({ requestId, sessionId, iteration }, 'Loop timeout reached, stopping early');
-          finalContent = finalContent || '处理超时，已返回当前结果。';
+          const elapsedMin = ((Date.now() - startedAt) / 60000).toFixed(1);
+          this.log.warn({ requestId, sessionId, iteration, elapsedMin }, 'Loop timeout reached, stopping early');
+          finalContent = finalContent || `处理超时（已运行 ${elapsedMin} 分钟），已返回当前结果。`;
           break;
         }
         iteration++;
 
-        const sanitizedForLLM = this.sanitizeHistory(currentHistory, true);
+        const sanitizedForLLM = this.contextManager.sanitizeHistory(currentHistory, true);
 
         let toolChoice: 'auto' | 'required' | 'none' = 'auto';
 
@@ -654,7 +464,7 @@ export class AgentLoop {
         const lastMsg = historyToUse.length > 0 ? historyToUse[historyToUse.length - 1] : null;
         this.log.debug({ requestId, sessionId, iteration, msgCount: historyToUse.length, payloadSize: payloadStr.length, lastMessagePreview: lastMsg ? JSON.stringify(lastMsg).substring(0, 100) : 'None' }, 'Sending request to model');
 
-        let result;
+        let result: any;
         let pendingToolCalls: any[] = [];
         toolsUsed = [];
 
@@ -663,7 +473,7 @@ export class AgentLoop {
         const timeoutId = setTimeout(() => {
           this.log.warn({ requestId, sessionId, iteration }, 'LLM request timed out');
           requestController.abort();
-        }, 180000); // 3 minutes timeout
+        }, 600000); // 10 minutes timeout (align with loop timeout)
 
         // Link user abort signal to request controller
         const onUserAbort = () => requestController.abort();
@@ -684,36 +494,108 @@ export class AgentLoop {
             abortSignal: requestController.signal,
           });
 
+          this.log.debug({ requestId, sessionId, iteration }, 'LLM call returned successfully');
+
           if (result.toolCalls && result.toolCalls.length > 0) {
             pendingToolCalls = result.toolCalls;
             toolsUsed = pendingToolCalls.map((t: any) => t.toolName);
             this.metrics.tool_calls += pendingToolCalls.length;
+            
+            // Loop Detection Logic
+            // We hash the tool calls (name + args) to detect repetition
+            const callSignatures = pendingToolCalls.map((t: any) => {
+               // Normalize args for consistent hashing
+               const argsStr = JSON.stringify(t.args || {});
+               return `${t.toolName}:${argsStr}`;
+            }).join('|');
+
+            recentToolCalls.push(callSignatures);
+            if (recentToolCalls.length > MAX_REPEAT_HISTORY) {
+                recentToolCalls.shift();
+            }
+
+            // Check if all recent calls are identical
+            if (recentToolCalls.length === MAX_REPEAT_HISTORY && recentToolCalls.every(s => s === callSignatures)) {
+                this.log.warn({ requestId, sessionId, callSignatures }, 'Detected potential infinite loop (identical tool calls)');
+                consecutiveToolErrors++; // Treat as error to trigger backoff or stop
+                
+                if (consecutiveToolErrors > 2) {
+                    finalContent = "系统检测到连续重复执行相同的操作，已强制终止任务以避免死循环。";
+                    break;
+                }
+            } else {
+                // Reset counter if pattern breaks
+                // But only if it's a completely different tool or args
+                // If it's just one different tool in a batch, we might still be looping.
+                // For simplicity, we only reset if the signature is different.
+                if (recentToolCalls.length > 1 && recentToolCalls[recentToolCalls.length - 1] !== recentToolCalls[recentToolCalls.length - 2]) {
+                   // Only reset strict error counter if we are genuinely doing something different
+                   // We don't reset consecutiveToolErrors here because that's for execution errors
+                }
+            }
           }
         } catch (err: any) {
           if (err.name === 'AbortError' || err.message?.includes('aborted')) {
             this.log.error({ requestId, sessionId, iteration }, 'LLM call aborted');
             this.metrics.timeouts += 1;
             finalContent = "任务已被中止（或超时）。";
-          } else {
+            break;
+          } 
+          
+          // Handle JSON parsing errors (truncation) by feeding back to LLM
+          if (err.message && (err.message.includes('JSON parsing failed') || err.message.includes('Invalid arguments'))) {
+             this.log.warn({ requestId, sessionId, iteration, err }, 'JSON parsing/validation failed. Sending guidance to LLM.');
+             
+             // 1. Notify user (optional, but good for transparency)
+             bus.publish({
+               id: Math.random().toString(36).substring(7),
+               source: 'agent',
+               target: channel,
+               content: `⚠️ 检测到工具调用参数过长导致解析失败，正在自动重试并要求模型分段处理...`,
+               type: 'text',
+               timestamp: Date.now(),
+               metadata: { ...message.metadata, sessionId, requestId, to: message.metadata?.to || chatId },
+             });
+
+             // 2. Add system guidance to history
+             const guidanceMessage = {
+               role: 'user',
+               content: `[System Error] Previous tool call failed: JSON parsing error (likely due to output truncation). \n\n**Action Required:**\n- The content you tried to write/pass was too long.\n- DO NOT retry the exact same action.\n- PLEASE split the content into smaller chunks (e.g. write partial file, then append) or reduce the argument size.`
+             } as any;
+             
+             currentHistory.push(guidanceMessage);
+             await this.sessionManager.addMessage(sessionId, guidanceMessage);
+             
+             // 3. Continue loop to let LLM retry
+             continue;
+          }
+
+          {
             this.log.error({ requestId, sessionId, iteration, err }, 'LLM call error');
             // 模型降级一次：尝试备用模型
-            const fallbackModelId = process.env.NANOBOT_FALLBACK_MODEL || 'gpt-4o-mini';
-      const fallbackModel = createModel(fallbackModelId, this.config);
-      this.log.warn({ requestId, sessionId, iteration, fallbackModelId }, 'Retrying with fallback model');
-      const retry = await generateText({
-        model: fallbackModel,
-        system: systemPrompt,
-        messages: historyToUse,
-        tools,
-        toolChoice,
-        maxSteps: 1,
-        temperature: this.config.agents.defaults.temperature,
-        maxTokens,
-      });
-      result = retry;
-      continue;
+            const fallbackModelId = process.env.NANOBOT_FALLBACK_MODEL || 'deepseek:deepseek-chat';
+            // Use the same model creation logic to ensure bypassProxy is respected if it's deepseek
+            const fallbackModel = createModel(fallbackModelId, this.config);
+            this.log.warn({ requestId, sessionId, iteration, fallbackModelId }, 'Retrying with fallback model');
+
+            try {
+              const retry = await generateText({
+                model: fallbackModel,
+                system: systemPrompt,
+                messages: historyToUse,
+                tools,
+                toolChoice,
+                maxSteps: 1,
+                temperature: this.config.agents.defaults.temperature,
+                maxTokens,
+                abortSignal: requestController.signal,
+              });
+              result = retry;
+            } catch (retryErr: any) {
+              this.log.error({ requestId, sessionId, iteration, retryErr }, 'Fallback model also failed');
+              throw retryErr;
+            }
           }
-          break;
         } finally {
           clearTimeout(timeoutId);
           if (abortSignal) {
@@ -753,9 +635,16 @@ export class AgentLoop {
         }
 
         if (pureText) {
+          // Always update summaryText so it captures the latest text
+          summaryText = pureText;
+
+          // Only publish text content immediately if there are tool calls
+          // This ensures the user sees the "thought" before the tool runs.
+          // If there are NO tool calls, this is the final response, 
+          // so we let the loop break and publish it once at the end.
           if (result.toolCalls && result.toolCalls.length > 0) {
-            // Streaming behavior: Send intermediate text immediately instead of accumulating
-            this.log.debug({ requestId, sessionId, iteration }, 'Sending intermediate text');
+            this.log.debug({ requestId, sessionId, iteration }, 'Sending text response');
+            
             bus.publish({
               id: Math.random().toString(36).substring(7),
               source: 'agent',
@@ -769,11 +658,7 @@ export class AgentLoop {
                 to: message.metadata?.to || chatId
               },
             });
-            // Do not accumulate text to avoid duplication in final response
-            // if (accumulatedText) accumulatedText += '\n\n';
-            // accumulatedText += pureText;
-          } else {
-            summaryText = pureText;
+            lastPublishedText = pureText;
           }
         }
 
@@ -807,7 +692,7 @@ export class AgentLoop {
         if (result.toolCalls && result.toolCalls.length > 0) {
           this.log.debug({ requestId, sessionId, iteration, tools: result.toolCalls.length }, 'Executing tools');
 
-          const { results, missing } = await this.executeTools(
+          const { results, missing } = await this.stepExecutor.executeTools(
             result.toolCalls,
             tools,
             currentHistory,
@@ -838,8 +723,8 @@ export class AgentLoop {
               let header = `**🔨 ${r.toolName}**`;
               if (r.toolName === 'runCommand' && args.command) {
                 const cmd = args.command;
-                const truncatedCmd = cmd.length > 50 ? cmd.substring(0, 47) + '...' : cmd;
-                header += `: \`${truncatedCmd}\``;
+                // Show full command in a code block on new line for mobile readability
+                header += `:\n\`\`\`bash\n${cmd}\n\`\`\``;
               } else if ((r.toolName === 'readFile' || r.toolName === 'read_file') && args.file_path) {
                 const fname = args.file_path.split('/').pop();
                 header += `: \`${fname}\``;
@@ -920,6 +805,11 @@ export class AgentLoop {
         } else {
           let content = summaryText || pureText || accumulatedText;
 
+          if (content && content === lastPublishedText) {
+            this.log.debug('Skipping duplicate content as final response');
+            content = '';
+          }
+
           if (!content.trim() && accumulatedText) {
             content = accumulatedText;
           }
@@ -933,11 +823,11 @@ export class AgentLoop {
             finalContent = content.trim();
           } else if (allToolResults.length > 0) {
             const lastResult = allToolResults[allToolResults.length - 1].result;
-        const resultString = typeof lastResult === 'string' ? lastResult : JSON.stringify(lastResult, null, 2);
-        finalContent = `任务已处理完成。最后的结果如下：\n\n${resultString}`;
-      } else {
-        finalContent = '抱歉，我未能生成有效的回复。';
-      }
+            const resultString = typeof lastResult === 'string' ? lastResult : JSON.stringify(lastResult, null, 2);
+            finalContent = `任务已处理完成。最后的结果如下：\n\n${resultString}`;
+          } else {
+            finalContent = '抱歉，我未能生成有效的回复。';
+          }
           break;
         }
 
@@ -950,10 +840,11 @@ export class AgentLoop {
           }
 
           if (content.trim()) {
-            finalContent = content.trim() + '\n\n(注意：由于处理步骤过多，以上是已完成的部分结果。)';
+            finalContent = content.trim() + '\n\n(注意：由于处理步骤过多（已达' + maxIterations + '步），以上是已完成的部分结果。)';
           } else if (allToolResults.length > 0) {
             const lastResult = allToolResults[allToolResults.length - 1].result;
-            finalContent = (typeof lastResult === 'string' ? lastResult : JSON.stringify(lastResult, null, 2)) + '\n\n(注意：任务未完全结束，以上是最后的工具执行结果。)';
+            const resultString = typeof lastResult === 'string' ? lastResult : JSON.stringify(lastResult, null, 2);
+            finalContent = resultString + '\n\n(注意：任务未完全结束，以上是最后的工具执行结果。)';
           } else {
             finalContent = '抱歉，我尝试了多次但未能完成任务。';
           }
@@ -962,6 +853,9 @@ export class AgentLoop {
       }
 
       this.log.info({ requestId, sessionId, iterations: iteration, toolsUsed: toolsUsed.length, totalToolResults: allToolResults.length, duration_ms: Date.now() - startedAt }, 'Response completed');
+      
+      console.log(`[Agent] Publishing response to ${channel} for ${chatId}`);
+      this.log.info({ channel, chatId, contentPreview: finalContent.substring(0, 50) }, 'Publishing response to bus');
 
       bus.publish({
         id: Math.random().toString(36).substring(7),
@@ -977,11 +871,40 @@ export class AgentLoop {
           to: message.metadata?.to || chatId
         },
       });
+      this.log.info({ channel, chatId }, 'Response published to bus');
 
       if (this.memoryStore && finalContent && finalContent.length > 0) {
-        const summary = `[${new Date().toLocaleTimeString()}] ${finalContent.slice(0, 500)}${finalContent.length > 500 ? '...' : ''}`;
-        await this.memoryStore.appendToday(summary);
-        this.log.debug({ requestId, sessionId }, 'Auto-saved response to today memory');
+        // Construct a rich log entry for the summary system
+        const now = new Date();
+        const timeStr = [now.getHours(), now.getMinutes(), now.getSeconds()]
+          .map(n => n.toString().padStart(2, '0'))
+          .join(':');
+        let logEntry = `### [${timeStr}] Interaction\n\n`;
+        
+        // 1. User Input
+        if (message.content) {
+          // Truncate long inputs
+          const inputPreview = typeof message.content === 'string' 
+            ? message.content 
+            : '[Complex/Multi-modal Input]';
+          logEntry += `**User:** ${inputPreview.slice(0, 500)}${inputPreview.length > 500 ? '...' : ''}\n\n`;
+        }
+
+        // 2. Tool Executions
+        if (allToolResults.length > 0) {
+          logEntry += `**Tools Used:**\n`;
+          allToolResults.forEach(t => {
+            const resultPreview = typeof t.result === 'string' ? t.result.slice(0, 100) : JSON.stringify(t.result).slice(0, 100);
+            logEntry += `- \`${t.toolName}\`: ${resultPreview}...\n`;
+          });
+          logEntry += '\n';
+        }
+
+        // 3. Agent Response
+        logEntry += `**Agent:** ${finalContent.slice(0, 1000)}${finalContent.length > 1000 ? '...' : ''}\n`;
+
+        await this.memoryStore.appendToday(logEntry);
+        this.log.debug({ requestId, sessionId }, 'Auto-saved rich interaction log to today memory');
       }
 
     } catch (error: any) {
@@ -1001,7 +924,7 @@ export class AgentLoop {
 
     try {
       const fullHistory = await this.sessionManager.getHistory(sessionId);
-      const history = this.trimHistory(fullHistory);
+      const history = this.contextManager.trimHistory(fullHistory);
       if (history.length === 0) {
         // 如果没有历史记录，可能是首次会话，或者 sessionManager 出错
         this.log.warn({ sessionId }, 'History is empty, initializing with user message');
@@ -1015,6 +938,11 @@ export class AgentLoop {
       // Inject tool definitions into system prompt
       const toolDefinitions = this.toolRegistry.getToolDefinitionsSummary();
       const systemPrompt = await contextBuilder.buildSystemPrompt(channel, chatId, toolDefinitions);
+
+      // Debug: Log subagent manager status
+      if (!this.subagentManager) {
+        this.log.error({ sessionId }, 'SubagentManager is not initialized in AgentLoop!');
+      }
 
       const { tools, initPromise } = this.toolRegistry.getTools({
         subagentManager: this.subagentManager,
@@ -1087,6 +1015,11 @@ export class AgentLoop {
         } catch (retryError: any) {
           this.log.error({ sessionId, requestId, err: retryError }, 'Retry without images failed');
         }
+      }
+
+      // Don't send "Sorry, I encountered an error" if it's just an abort
+      if (error.name === 'AbortError' || error.message?.includes('aborted')) {
+        return;
       }
 
       bus.publish({

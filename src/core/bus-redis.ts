@@ -1,6 +1,6 @@
 import { Redis, RedisOptions } from 'ioredis';
 import { Config } from './config.js';
-import { TransportAdapter, Message } from './bus.js';
+import type { TransportAdapter, Message } from './bus-types.js';
 
 export class RedisTransportAdapter implements TransportAdapter {
   private pubClient: Redis;

@@ -51,6 +51,10 @@ export class MemoryStore {
       merged = `# ${todayDate()}\n\n${content}`;
     } else {
       const existing = await fs.readFile(todayFile, 'utf-8');
+      // Simple deduplication: avoid appending identical content
+      if (existing.includes(content.trim())) {
+        return;
+      }
       merged = `${existing}\n${content}`;
     }
 
@@ -190,12 +194,62 @@ export class MemoryStore {
       parts.push('## Long-term Memory\n' + longTerm);
     }
 
+    // Daily Summaries (Last 3 days)
+    const dailySummaries = await this.getRecentDailySummaries(3);
+    if (dailySummaries) {
+      parts.push('## Recent Daily Summaries\n' + dailySummaries);
+    }
+
+    // Hourly Summaries (Today)
+    const hourlySummaries = await this.getTodayHourlySummaries();
+    if (hourlySummaries) {
+      parts.push("## Today's Hourly Summaries\n" + hourlySummaries);
+    }
+
     // Today's notes
     const today = await this.readToday();
     if (today) {
-      parts.push("## Today's Notes\n" + today);
+      parts.push("## Today's Notes (Raw)\n" + today);
     }
 
     return parts.length > 0 ? parts.join('\n\n') : '';
+  }
+
+  private async getRecentDailySummaries(count: number): Promise<string> {
+    const dailyDir = path.join(this.memoryDir, 'daily');
+    if (!(await fs.pathExists(dailyDir))) return '';
+
+    const files = await fs.readdir(dailyDir);
+    const sortedFiles = files
+      .filter(f => f.endsWith('_summary.md'))
+      .sort()
+      .reverse()
+      .slice(0, count);
+
+    const summaries: string[] = [];
+    for (const file of sortedFiles) {
+      const content = await fs.readFile(path.join(dailyDir, file), 'utf-8');
+      summaries.push(`### ${file.replace('_summary.md', '')}\n${content}`);
+    }
+    return summaries.join('\n\n');
+  }
+
+  private async getTodayHourlySummaries(): Promise<string> {
+    const hourlyDir = path.join(this.memoryDir, 'hourly');
+    if (!(await fs.pathExists(hourlyDir))) return '';
+
+    const todayStr = new Date().toISOString().split('T')[0];
+    const files = await fs.readdir(hourlyDir);
+    const sortedFiles = files
+      .filter(f => f.startsWith(todayStr) && f.endsWith('_summary.md'))
+      .sort();
+
+    const summaries: string[] = [];
+    for (const file of sortedFiles) {
+      const content = await fs.readFile(path.join(hourlyDir, file), 'utf-8');
+      const time = file.split('_')[1]; // 2023-10-27_14_summary.md -> 14
+      summaries.push(`### ${time}:00 - ${parseInt(time)+1}:00\n${content}`);
+    }
+    return summaries.join('\n\n');
   }
 }
