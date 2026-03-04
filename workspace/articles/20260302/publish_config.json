@@ -1,0 +1,118 @@
+{
+  "platform": "wechat_official_account",
+  "date": "$(date '+%Y-%m-%d')",
+  "articles": [
+    {
+      "id": 1,
+      "title": "AI Agent技术架构演进与核心突破",
+      "file": "articles/$(date '+%Y%m%d')/article_1.md",
+      "type": "技术分析",
+      "publish_time": "08:00",
+      "images": [
+        {
+          "type": "cover",
+          "path": "images/cover_1.jpg",
+          "description": "AI Agent架构示意图"
+        },
+        {
+          "type": "technical",
+          "path": "images/tech_1_1.jpg",
+          "description": "分层架构图"
+        },
+        {
+          "type": "technical",
+          "path": "images/tech_1_2.jpg",
+          "description": "核心技术图"
+        },
+        {
+          "type": "diagram",
+          "path": "images/diagram_1.jpg",
+          "description": "开源框架生态图"
+        }
+      ],
+      "tags": ["AI技术", "架构设计", "技术分析", "开源框架"],
+      "category": "技术教程"
+    },
+    {
+      "id": 2,
+      "title": "企业级AI Agent应用实践与效果评估",
+      "file": "articles/$(date '+%Y%m%d')/article_2.md",
+      "type": "应用案例",
+      "publish_time": "12:00",
+      "images": [
+        {
+          "type": "cover",
+          "path": "images/cover_2.jpg",
+          "description": "企业应用场景"
+        },
+        {
+          "type": "case_study",
+          "path": "images/case_2_1.jpg",
+          "description": "应用界面示意图"
+        },
+        {
+          "type": "effect",
+          "path": "images/effect_2_1.jpg",
+          "description": "效果对比图表"
+        }
+      ],
+      "tags": ["企业应用", "案例研究", "数字化转型", "效率提升"],
+      "category": "行业应用"
+    },
+    {
+      "id": 3,
+      "title": "2026年AI Agent发展趋势与投资机会",
+      "file": "articles/$(date '+%Y%m%d')/article_3.md",
+      "type": "趋势分析",
+      "publish_time": "18:00",
+      "images": [
+        {
+          "type": "cover",
+          "path": "images/cover_3.jpg",
+          "description": "趋势分析封面"
+        },
+        {
+          "type": "trend",
+          "path": "images/trend_3_1.jpg",
+          "description": "技术趋势时间线"
+        },
+        {
+          "type": "market",
+          "path": "images/market_3_1.jpg",
+          "description": "市场规模预测"
+        },
+        {
+          "type": "analysis",
+          "path": "images/analysis_3_1.jpg",
+          "description": "投资热点分布"
+        },
+        {
+          "type": "analysis",
+          "path": "images/analysis_3_2.jpg",
+          "description": "竞争格局分析"
+        }
+      ],
+      "tags": ["趋势预测", "市场分析", "投资机会", "行业展望"],
+      "category": "行业洞察"
+    }
+  ],
+  "publish_schedule": {
+    "daily_limit": 3,
+    "time_slots": ["08:00", "12:00", "18:00"],
+    "auto_publish": true,
+    "require_review": true,
+    "review_deadline": "发布前1小时"
+  },
+  "api_config": {
+    "app_id": "${WECHAT_APP_ID}",
+    "app_secret": "${WECHAT_APP_SECRET}",
+    "access_token": "auto_renew",
+    "base_url": "https://api.weixin.qq.com/cgi-bin"
+  },
+  "notification": {
+    "on_success": true,
+    "on_failure": true,
+    "email": "your-email@example.com",
+    "webhook": "https://your-domain.com/webhook"
+  }
+}

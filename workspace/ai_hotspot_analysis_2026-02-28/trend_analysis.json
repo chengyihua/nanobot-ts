@@ -1,0 +1,160 @@
+{
+  "date": "2026-02-28",
+  "total_items": 6,
+  "category_stats": {
+    "AI Agent框架": 1,
+    "开发工具": 1,
+    "多模态AI": 1,
+    "融资与投资": 1,
+    "政策监管": 1,
+    "技术突破": 1
+  },
+  "hot_topics": [
+    {
+      "name": "AI融资热潮",
+      "confidence": 0.9,
+      "evidence": [
+        {
+          "title": "OpenAI raises $110B on $730B pre-money valuation",
+          "points": 335,
+          "comments": 435,
+          "url": "https://techcrunch.com/2026/02/27/openai-raises-110b/",
+          "category": "融资与投资",
+          "trend": "hot",
+          "summary": "OpenAI完成1100亿美元融资，估值7300亿美元，创私募融资纪录"
+        }
+      ],
+      "analysis": "AI行业进入大规模融资阶段，资本加速涌入"
+    },
+    {
+      "name": "AI技术突破",
+      "confidence": 0.8,
+      "evidence": [
+        {
+          "title": "Google announces Gemini 2.0 with 10x reasoning improvement",
+          "points": 245,
+          "comments": 189,
+          "url": "https://blog.google/technology/ai/gemini-2-0/",
+          "category": "技术突破",
+          "trend": "rising",
+          "summary": "Google发布Gemini 2.0，推理能力提升10倍"
+        }
+      ],
+      "analysis": "多模态、推理能力等关键技术取得突破"
+    },
+    {
+      "name": "开源AI生态繁荣",
+      "confidence": 0.85,
+      "evidence": [
+        {
+          "name": "OpenSandbox",
+          "owner": "alibaba",
+          "description": "通用AI应用沙箱平台，支持多语言SDK和统一API",
+          "stars_today": 105,
+          "language": "Python",
+          "trend": "rising",
+          "category": "AI Agent框架",
+          "url": "https://github.com/alibaba/OpenSandbox"
+        },
+        {
+          "name": "AgentKit",
+          "owner": "microsoft",
+          "description": "微软开源的AI Agent开发工具包",
+          "stars_today": 87,
+          "language": "Python",
+          "trend": "rising",
+          "category": "开发工具",
+          "url": "https://github.com/microsoft/AgentKit"
+        },
+        {
+          "name": "MultiModal-LLM",
+          "owner": "open-mmlab",
+          "description": "开源多模态大语言模型框架",
+          "stars_today": 63,
+          "language": "Python",
+          "trend": "stable",
+          "category": "多模态AI",
+          "url": "https://github.com/open-mmlab/MultiModal-LLM"
+        }
+      ],
+      "analysis": "GitHub上AI相关项目快速增长，开源生态活跃"
+    },
+    {
+      "name": "AI地缘政治",
+      "confidence": 0.75,
+      "evidence": [
+        {
+          "title": "I am directing the Department of War to designate Anthropic a supply-chain risk",
+          "points": 660,
+          "comments": 530,
+          "url": "https://twitter.com/secwar/status/2027507717469049070",
+          "category": "政策监管",
+          "trend": "hot",
+          "summary": "美国国防部将Anthropic列为供应链风险，AI地缘政治升温"
+        }
+      ],
+      "analysis": "AI技术成为国家间竞争焦点，监管政策趋严"
+    }
+  ],
+  "top_github_projects": [
+    {
+      "name": "OpenSandbox",
+      "owner": "alibaba",
+      "description": "通用AI应用沙箱平台，支持多语言SDK和统一API",
+      "stars_today": 105,
+      "language": "Python",
+      "trend": "rising",
+      "category": "AI Agent框架",
+      "url": "https://github.com/alibaba/OpenSandbox"
+    },
+    {
+      "name": "AgentKit",
+      "owner": "microsoft",
+      "description": "微软开源的AI Agent开发工具包",
+      "stars_today": 87,
+      "language": "Python",
+      "trend": "rising",
+      "category": "开发工具",
+      "url": "https://github.com/microsoft/AgentKit"
+    },
+    {
+      "name": "MultiModal-LLM",
+      "owner": "open-mmlab",
+      "description": "开源多模态大语言模型框架",
+      "stars_today": 63,
+      "language": "Python",
+      "trend": "stable",
+      "category": "多模态AI",
+      "url": "https://github.com/open-mmlab/MultiModal-LLM"
+    }
+  ],
+  "top_hn_stories": [
+    {
+      "title": "OpenAI raises $110B on $730B pre-money valuation",
+      "points": 335,
+      "comments": 435,
+      "url": "https://techcrunch.com/2026/02/27/openai-raises-110b/",
+      "category": "融资与投资",
+      "trend": "hot",
+      "summary": "OpenAI完成1100亿美元融资，估值7300亿美元，创私募融资纪录"
+    },
+    {
+      "title": "I am directing the Department of War to designate Anthropic a supply-chain risk",
+      "points": 660,
+      "comments": 530,
+      "url": "https://twitter.com/secwar/status/2027507717469049070",
+      "category": "政策监管",
+      "trend": "hot",
+      "summary": "美国国防部将Anthropic列为供应链风险，AI地缘政治升温"
+    },
+    {
+      "title": "Google announces Gemini 2.0 with 10x reasoning improvement",
+      "points": 245,
+      "comments": 189,
+      "url": "https://blog.google/technology/ai/gemini-2-0/",
+      "category": "技术突破",
+      "trend": "rising",
+      "summary": "Google发布Gemini 2.0，推理能力提升10倍"
+    }
+  ]
+}

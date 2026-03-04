@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nanobot.summary</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/schedule_summary.py</string>
+    </array>
+    
+    <key>StartInterval</key>
+    <integer>3600</integer> <!-- 每小时运行一次 -->
+    
+    <key>StandardOutPath</key>
+    <string>/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/logs/summary_launchd.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/logs/summary_launchd_error.log</string>
+    
+    <key>WorkingDirectory</key>
+    <string>/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace</string>
+    
+    <key>RunAtLoad</key>
+    <true/> <!-- 加载时立即运行一次 -->
+    
+    <key>KeepAlive</key>
+    <false/>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

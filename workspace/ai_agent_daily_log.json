@@ -1,0 +1,82 @@
+[
+  {
+    "date": "2026-02-27",
+    "news_count": 3,
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-27/wechat_article.md",
+    "media_id": null,
+    "status": "test_mode",
+    "notification": "⚠️ AI Agent每日热点追踪完成（测试模式）\n\n📅 日期：2026年02月27日\n⏰ 时间：18:43:48\n📝 状态：文章草稿已生成，但未实际发布\n\n文章保存在：/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-27/wechat_article.md"
+  },
+  {
+    "date": "2026-02-27",
+    "news_count": 3,
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-27/wechat_article.md",
+    "media_id": null,
+    "status": "test_mode",
+    "notification": "⚠️ AI Agent每日热点追踪完成（测试模式）\n\n📅 日期：2026年02月27日\n⏰ 时间：18:43:48\n📝 状态：文章草稿已生成，但未实际发布\n\n文章保存在：/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-27/wechat_article.md"
+  },
+  {
+    "date": "2026-02-27",
+    "news_count": 3,
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-27/wechat_article.md",
+    "media_id": "9jujMwHYxTQM8ZgNCpgdzG0gUE5M4ssgpWodCU6NrHzPrgM2dFo47FR0_r2YAxUk",
+    "status": "success",
+    "notification": "✅ AI Agent每日热点追踪完成！\n\n📅 日期：2026年02月27日\n⏰ 时间：18:44:38\n🚀 状态：已成功发布到微信公众号草稿箱\n📋 Media ID：9jujMwHYxTQM8ZgNCpgdzG0gUE5M4ssgpWodCU6NrHzPrgM2dFo47FR0_r2YAxUk\n\n请登录微信公众号后台查看并发布文章。"
+  },
+  {
+    "date": "2026-02-27",
+    "news_count": 3,
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-27/wechat_article.md",
+    "media_id": "9jujMwHYxTQM8ZgNCpgdzO_Trasq2JGKJwSRuiQrWbu8n-QKi8jiE8zFOBldmRab",
+    "status": "success",
+    "notification": "✅ AI Agent每日热点追踪完成！\n\n📅 日期：2026年02月27日\n⏰ 时间：18:44:48\n🚀 状态：已成功发布到微信公众号草稿箱\n📋 Media ID：9jujMwHYxTQM8ZgNCpgdzO_Trasq2JGKJwSRuiQrWbu8n-QKi8jiE8zFOBldmRab\n\n请登录微信公众号后台查看并发布文章。"
+  },
+  {
+    "date": "2026-02-28",
+    "news_count": 3,
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-28/wechat_article.md",
+    "media_id": "9jujMwHYxTQM8ZgNCpgdzIuSW4eJsyVTqaBhnDu1uSzFse0xWmurv1e8Yjxqa8QP",
+    "status": "success",
+    "notification": "✅ AI Agent每日热点追踪完成！\n\n📅 日期：2026年02月28日\n⏰ 时间：06:00:19\n🚀 状态：已成功发布到微信公众号草稿箱\n📋 Media ID：9jujMwHYxTQM8ZgNCpgdzIuSW4eJsyVTqaBhnDu1uSzFse0xWmurv1e8Yjxqa8QP\n\n请登录微信公众号后台查看并发布文章。"
+  },
+  {
+    "date": "2026-02-28",
+    "news_count": 3,
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-28/wechat_article.md",
+    "media_id": "9jujMwHYxTQM8ZgNCpgdzHVR_lK915WBtHZstU3CppeIy7UmcKhOnLFvogWa4RzD",
+    "status": "success",
+    "notification": "✅ AI Agent每日热点追踪完成！\n\n📅 日期：2026年02月28日\n⏰ 时间：06:00:36\n🚀 状态：已成功发布到微信公众号草稿箱\n📋 Media ID：9jujMwHYxTQM8ZgNCpgdzHVR_lK915WBtHZstU3CppeIy7UmcKhOnLFvogWa4RzD\n\n请登录微信公众号后台查看并发布文章。"
+  },
+  {
+    "date": "2026-03-01",
+    "news_count": 3,
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-03-01/wechat_article.md",
+    "media_id": "9jujMwHYxTQM8ZgNCpgdzL8B1wGiI3JBgUtob81r99aufrY7n3AkIlwT62Es21L9",
+    "status": "success",
+    "notification": "✅ AI Agent每日热点追踪完成！\n\n📅 日期：2026年03月01日\n⏰ 时间：06:00:08\n🚀 状态：已成功发布到微信公众号草稿箱\n📋 Media ID：9jujMwHYxTQM8ZgNCpgdzL8B1wGiI3JBgUtob81r99aufrY7n3AkIlwT62Es21L9\n\n请登录微信公众号后台查看并发布文章。"
+  },
+  {
+    "date": "2026-03-01",
+    "news_count": 3,
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-03-01/wechat_article.md",
+    "media_id": "9jujMwHYxTQM8ZgNCpgdzP1GzH2TAGguNenU0DrWk0-IIGWKkjB4UxAyMHF3PDWU",
+    "status": "success",
+    "notification": "✅ AI Agent每日热点追踪完成！\n\n📅 日期：2026年03月01日\n⏰ 时间：06:00:17\n🚀 状态：已成功发布到微信公众号草稿箱\n📋 Media ID：9jujMwHYxTQM8ZgNCpgdzP1GzH2TAGguNenU0DrWk0-IIGWKkjB4UxAyMHF3PDWU\n\n请登录微信公众号后台查看并发布文章。"
+  },
+  {
+    "date": "2026-03-02",
+    "news_count": 3,
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-03-02/wechat_article.md",
+    "media_id": null,
+    "status": "test_mode",
+    "notification": "⚠️ AI Agent每日热点追踪完成（测试模式）\n\n📅 日期：2026年03月02日\n⏰ 时间：06:00:07\n📝 状态：文章草稿已生成，但未实际发布\n\n文章保存在：/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-03-02/wechat_article.md"
+  },
+  {
+    "date": "2026-03-02",
+    "news_count": 3,
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-03-02/wechat_article.md",
+    "media_id": null,
+    "status": "test_mode",
+    "notification": "⚠️ AI Agent每日热点追踪完成（测试模式）\n\n📅 日期：2026年03月02日\n⏰ 时间：06:00:11\n📝 状态：文章草稿已生成，但未实际发布\n\n文章保存在：/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-03-02/wechat_article.md"
+  }
+]

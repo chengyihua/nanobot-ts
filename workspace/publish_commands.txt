@@ -1,0 +1,14 @@
+# 复制文章内容
+cat "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-28/wechat_article.md" | pbcopy
+
+# 查看文章
+cat "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-28/wechat_article.md"
+
+# 打开HTML版本
+open "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-28/wechat_article.html"
+
+# 打开封面图片
+open "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-28/cover.jpg"
+
+# 打开微信公众号后台
+open https://mp.weixin.qq.com

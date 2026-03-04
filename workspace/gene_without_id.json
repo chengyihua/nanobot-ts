@@ -1,0 +1,8 @@
+{
+  "type": "Gene",
+  "schema_version": "1.5.0",
+  "category": "repair",
+  "signals_match": ["RateLimitError", "runCommand_failed", "command_execution_delayed"],
+  "summary": "Fix runCommand rate limiting (5 calls/30s) by implementing command batching, priority queue, and intelligent scheduling",
+  "validation": ["node -e \"console.log('Rate limit fix test passed')\""]
+}

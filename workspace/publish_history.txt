@@ -1,0 +1,70 @@
+=== 发布记录 ===
+时间: 2026-02-28 08:46:07
+标题: OpenAI千亿融资背后的AI军备竞赛
+作者: 
+文件: ai_agent_news_2026-02-28/wechat_article.md
+哈希: d41d8cd98f00b204e9800998ecf8427e
+Media ID: 9jujMwHYxTQM8ZgNCpgdzPCQhLIyxdAkCzsmWoq3gMKuMqWOrYUtRU39ZlaWuQxN
+
+=== 发布记录 ===
+时间: 2026-02-28 08:51:36
+标题: OpenAI千亿融资：AI军备竞赛进入新阶段
+作者: AI观察者
+文件: ai_agent_news_2026-02-28/deep_article.md
+哈希: 5d41402abc4b2a76b9719d911017c592
+Media ID: 9jujMwHYxTQM8ZgNCpgdzEfIh-xYUn1IA8NsP_zIaWZqouoVKtdMZlwoaKucXKXT
+
+=== 发布记录 ===
+时间: 2026-02-28 08:58:11
+标题: AI Agent框架大战：谁将定义下一代智能体？
+作者: 技术架构师
+文件: article_1_agent_framework.md
+哈希: 7d793037a0760186574b0282f2f435e7
+Media ID: 9jujMwHYxTQM8ZgNCpgdzAX0n5eanzpbLaH_hHVBtNhUXHJCflQD9s3cLG4sg6Le
+
+=== 发布记录 ===
+时间: 2026-02-28 09:00:44
+标题: 多模态AI突破：当语言模型学会'看'和'听'
+作者: AI研究员
+文件: article_2_multimodal_ai.md
+哈希: 098f6bcd4621d373cade4e832627b4f6
+Media ID: 9jujMwHYxTQM8ZgNCpgdzMzTZAlpBVtUWo_z226ujPxYj4ovpt_X_mCuyjBbnAbB
+
+=== 发布记录 ===
+时间: 2026-02-28 09:01:25
+标题: 开源AI的逆袭：小模型如何挑战巨头霸权？
+作者: 开源倡导者
+文件: article_3_open_source_ai.md
+哈希: 7c6a180b36896a0a8c02787eeafb0e4c
+Media ID: 9jujMwHYxTQM8ZgNCpgdzDFruwNXv41cZ5lWo0fSc6v2zNZE9bBxrgUQwm8bWDRs=== 发布记录 ===
+时间: 2026-02-28 09:23:33
+标题: AI开源运动：社区驱动的创新模式
+作者: 开源倡导者
+文件: /Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/final_articles_2026-02-28/article_1.md
+哈希: dbdce3ae21bdc21a2d71a38ac0fc1da3
+Media ID: 9jujMwHYxTQM8ZgNCpgdzEt-NGAVO0ezxut0ozqOhYsp_u_rE8TPb-qLnQeaKV5V
+
+=== 发布记录 ===
+时间: 2026-02-28 09:23:44
+标题: AI监管博弈：中美欧政策对比分析
+作者: 政策研究员
+文件: /Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/final_articles_2026-02-28/article_2.md
+哈希: 9d8fbea644c3ae4543b1cb1185089a20
+Media ID: 9jujMwHYxTQM8ZgNCpgdzEccHJ9XzyPC7_MYbhgZsb7BWOT7l5eEFokSjHkM45Tz
+
+=== 发布记录 ===
+时间: 2026-02-28 09:23:54
+标题: AI就业影响：哪些工作会被取代，哪些会新生
+作者: 社会学家
+文件: /Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/final_articles_2026-02-28/article_3.md
+哈希: 72a95acb3232da22ede9cdfe558f43ef
+Media ID: 9jujMwHYxTQM8ZgNCpgdzJd5R-RMcSAtxIFAVVRjEw3DR5MB3L4PMovYVSHpJ_hi
+
+=== 发布记录 ===
+时间: 2026-02-28 09:24:05
+标题: AI医疗突破：诊断、药物研发、健康管理
+作者: 医疗AI研究员
+文件: /Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/final_articles_2026-02-28/article_2.md
+哈希: 1bb2481e1bb0ed48a8493b9dd65dce2a
+Media ID: 9jujMwHYxTQM8ZgNCpgdzKeszSFkXEGAVcxrkGJvQr5oWsdfkakKPlDF1p0LiuI7
+

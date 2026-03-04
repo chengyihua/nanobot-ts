@@ -7,7 +7,11 @@ export const createAgentTools = (options: ToolOptions) => {
   const { originChannel, originChatId } = options;
 
   if (!subagentManager) {
-    console.error('[createAgentTools] SubagentManager is MISSING in options!', Object.keys(options));
+    // Only warn in debug mode or if explicitly requested, as this function might be called
+    // just to get tool definitions (e.g. for system prompt) where subagentManager is not yet needed.
+    if (process.env.DEBUG) {
+      console.warn('[createAgentTools] SubagentManager is MISSING in options! Tool execution will fail if called.', Object.keys(options));
+    }
   }
 
   return {
@@ -20,7 +24,8 @@ export const createAgentTools = (options: ToolOptions) => {
       }),
       execute: async ({ name, goal, context }: { name: string; goal: string; context?: string }) => {
         if (!subagentManager) {
-          return { error: 'Subagent manager not available' };
+          console.error('[spawnSubagent] Execution failed: SubagentManager is undefined/null in closure');
+          return { error: 'Subagent manager not available (Internal Error: Manager not injected)' };
         }
         
         try {
@@ -29,7 +34,7 @@ export const createAgentTools = (options: ToolOptions) => {
           const chatId = originChatId || 'direct';
           
           const taskId = await subagentManager.spawn(fullTask, name, channel, chatId);
-          return { success: true, taskId, message: `Subagent ${name} started. Task ID: ${taskId}. Use checkSubagentStatus to monitor progress.` };
+          return { success: true, taskId, message: `Subagent ${name} started. Task ID: ${taskId}. It will run in the background and notify you when complete. Do NOT wait for it.` };
         } catch (error: any) {
           return { error: error.message };
         }

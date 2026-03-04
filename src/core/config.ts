@@ -177,6 +177,7 @@ export const AgentDefaultsSchema = z.object({
   temperature: z.number().default(0.7),
   max_iterations: z.number().default(100),
   timeout_ms: z.number().default(600000), // Default 10 minutes
+  verbose_tool_output: z.boolean().default(true), // Toggle for simplified tool output
 });
 
 export const AgentsConfigSchema = z.object({

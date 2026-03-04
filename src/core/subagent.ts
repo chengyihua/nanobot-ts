@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import { streamText, LanguageModelV1 } from 'ai';
+import { streamText, generateText, LanguageModelV1 } from 'ai';
 import { MessageBus } from './bus.js';
 import { ToolRegistry } from './tool-registry.js';
 import { Config } from './config.js';
@@ -71,6 +71,7 @@ export class SubagentManager {
     try {
       // Build subagent tools (no message tool, no spawn tool, no cron, no memory)
       const { tools: subagentTools, initPromise } = this.toolRegistry.getTools({
+        subagentManager: this, // Pass self to avoid "MISSING" error log
         originChannel: origin.channel,
         originChatId: origin.chatId,
       });
@@ -89,70 +90,26 @@ export class SubagentManager {
 
       const systemPrompt = this.buildSubagentPrompt(task);
 
-      const result = await streamText({
+      // Use generateText instead of streamText to avoid pipeThrough errors with certain providers/environments
+      console.log(`[Subagent] [${taskId}] starting execution with generateText (stream disabled)`);
+      
+      const result = await generateText({
         model: this.model,
         system: systemPrompt,
         messages: [{ role: 'user', content: task }],
         tools: subagentTools as any,
-        maxSteps: 15,
+        maxSteps: 50,
       });
 
-      let fullText = '';
-      
-      // Stream processing
-      for await (const part of result.fullStream) {
-        if (part.type === 'text-delta') {
-          fullText += part.textDelta;
-          // Optional: Publish streaming updates if needed
-          // For now, we only log to console to avoid flooding the bus for non-streaming clients
-          // But user requested "real-time stream thinking process"
-          // So we publish with a special metadata flag
-          await this.bus.publish({
-            id: crypto.randomUUID(),
-            source: 'subagent',
-            target: origin.channel,
-            content: part.textDelta,
-            type: 'text',
-            timestamp: Date.now(),
-            metadata: {
-              sessionId: `${origin.channel}:${origin.chatId}`,
-              to: origin.chatId,
-              originChannel: origin.channel,
-              originChatId: origin.chatId,
-              subagentId: taskId,
-              stream: true,
-              chunkType: 'text-delta'
-            }
-          });
-        } else if (part.type === 'tool-call') {
-           await this.bus.publish({
-            id: crypto.randomUUID(),
-            source: 'subagent',
-            target: origin.channel,
-            content: `🛠️ Calling tool: ${part.toolName}`,
-            type: 'text',
-            timestamp: Date.now(),
-            metadata: {
-              sessionId: `${origin.channel}:${origin.chatId}`,
-              to: origin.chatId,
-              originChannel: origin.channel,
-              originChatId: origin.chatId,
-              subagentId: taskId,
-              stream: true,
-              chunkType: 'tool-call',
-              toolName: part.toolName
-            }
-          });
-        }
-      }
+      const fullText = result.text;
 
       console.log(`[Subagent] [${taskId}] completed successfully`);
       
-      // Send final result
+      // Send final result to AGENT (not user directly)
       await this.bus.publish({
         id: crypto.randomUUID(),
         source: 'subagent',
-        target: origin.channel,
+        target: 'agent', // Changed from origin.channel to 'agent'
         content: `✅ Subagent [${label}] completed:\n\n${fullText}`,
         type: 'text',
         timestamp: Date.now(),

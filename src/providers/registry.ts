@@ -51,6 +51,11 @@ const createLoggingFetch = (agent: any) => {
       
       return response;
     } catch (error: any) {
+      if (error.name === 'AbortError' || error.type === 'aborted') {
+        console.warn(`[Registry:${requestId}] Fetch aborted for ${url}`);
+        // Rethrow as is, but ensure it's not treated as a crash
+        throw error;
+      }
       if (error.type === 'request-timeout' || error.message.includes('timeout')) {
            console.error(`[Registry:${requestId}] Fetch timed out after ${init?.timeout || 120000}ms for ${url}`);
       }
@@ -151,7 +156,7 @@ export const PROVIDERS: ProviderSpec[] = [
   {
     name: 'zhipu',
     displayName: 'Zhipu AI',
-    keywords: ['zhipu', 'glm', 'zai'],
+    keywords: ['zhipu', 'glm', 'zai', 'glm-5'],
     createModel: createOpenAICompatible('zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'ZHIPUAI_API_KEY', true)
   },
 

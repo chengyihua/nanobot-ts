@@ -234,8 +234,8 @@ export class ToolRegistry {
     return toolsMap;
   }
 
-  public getToolDefinitionsSummary(): string {
-    const { tools } = this.getTools();
+  public getToolDefinitionsSummary(options: ToolOptions = {}): string {
+    const { tools } = this.getTools(options);
     const toolDefinitions = Object.entries(tools).map(([name, tool]: [string, any]) => {
       return `- **${name}**: ${tool.description}`;
     }).join('\n');

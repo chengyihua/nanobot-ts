@@ -1,0 +1,6 @@
+主题: AI开源运动：社区驱动的创新模式
+风格: 开源社区
+Prompt: 开源AI, 代码协作, GitHub风格, 社区贡献, 绿色和黑色, 几何设计, 现代感, 4K, 高质量
+输出文件: /Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/final_images_2026-02-28/cover_1.jpg
+生成时间: 2026-02-28 09:23:54
+状态: 需要调用baoyu-image-gen技能生成

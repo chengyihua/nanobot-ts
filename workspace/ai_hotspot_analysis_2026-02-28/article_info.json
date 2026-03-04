@@ -1,0 +1,25 @@
+{
+  "title": "OpenAI千亿融资背后的AI军备竞赛",
+  "category": "投资分析",
+  "angle": "资本视角",
+  "target_audience": "投资者、创业者、行业观察者",
+  "depth_level": "深度分析",
+  "selected_topic": {
+    "name": "AI融资热潮",
+    "confidence": 0.9,
+    "evidence": [
+      {
+        "title": "OpenAI raises $110B on $730B pre-money valuation",
+        "points": 335,
+        "comments": 435,
+        "url": "https://techcrunch.com/2026/02/27/openai-raises-110b/",
+        "category": "融资与投资",
+        "trend": "hot",
+        "summary": "OpenAI完成1100亿美元融资，估值7300亿美元，创私募融资纪录"
+      }
+    ],
+    "analysis": "AI行业进入大规模融资阶段，资本加速涌入"
+  },
+  "confidence": 0.9,
+  "evidence_count": 1
+}

@@ -8,6 +8,7 @@ dist/
 
 # Environment variables
 .env
+.env.*
 
 # System files
 .DS_Store
@@ -22,6 +23,8 @@ pnpm-debug.log*
 
 # Nanobot runtime data
 .nanobot/sessions/
+.nanobot/config.json
+.nanobot/mcp.json
 workspace/memory/
 workspace/uploads/
 workspace/mcp.db
@@ -29,6 +32,7 @@ workspace/mcp.db
 # Personal Configs
 frpc.toml
 cron.json
+cron.json*
 
 # Test Artifacts and Logs
 *.png

@@ -104,11 +104,14 @@ export class CronService {
 
   public async start(): Promise<void> {
     this.running = true;
+    this.store = null; // Force reload from disk
     await this.loadStore();
     this.recomputeNextRuns();
     await this.saveStore();
     this.armTimer();
-    console.log(`[Cron] Service started with ${this.store?.jobs.length || 0} jobs`);
+    const store = this.store as unknown as CronStore;
+    const jobCount = store?.jobs?.length || 0;
+    console.log(`[Cron] Service started with ${jobCount} jobs`);
   }
 
   public stop(): void {

@@ -1,0 +1,34 @@
+[
+  {
+    "date": "2026-02-27",
+    "news_count": 5,
+    "report_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-27/analysis_report.md",
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-27/wechat_article.md",
+    "media_id": "TEST_MODE_SKIPPED",
+    "status": "completed"
+  },
+  {
+    "date": "2026-02-27",
+    "news_count": 5,
+    "report_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-27/analysis_report.md",
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-27/wechat_article.md",
+    "media_id": "TEST_MODE_SKIPPED",
+    "status": "completed"
+  },
+  {
+    "date": "2026-02-28",
+    "news_count": 5,
+    "report_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-28/analysis_report.md",
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-28/wechat_article.md",
+    "media_id": "TEST_MODE_SKIPPED",
+    "status": "completed"
+  },
+  {
+    "date": "2026-02-28",
+    "news_count": 5,
+    "report_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-28/analysis_report.md",
+    "article_path": "/Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/ai_agent_news_2026-02-28/wechat_article.md",
+    "media_id": "TEST_MODE_SKIPPED",
+    "status": "completed"
+  }
+]

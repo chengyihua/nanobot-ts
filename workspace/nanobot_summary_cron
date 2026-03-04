@@ -1,0 +1,9 @@
+# 智能摘要系统定时任务
+# 每小时生成摘要
+0 * * * * cd /Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace && /usr/bin/python3 schedule_summary.py >> logs/cron.log 2>&1
+
+# 每日0点生成详细摘要
+0 0 * * * cd /Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace && /usr/bin/python3 schedule_summary.py daily >> logs/cron_daily.log 2>&1
+
+# 清理旧日志（每周日3点）
+0 3 * * 0 find /Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/logs -name "*.log" -mtime +7 -delete

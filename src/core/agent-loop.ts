@@ -56,6 +56,11 @@ export class AgentLoop {
 
 
 
+  // --- Stall Detector State ---
+  private recentToolCalls: string[] = [];
+  private recentContents: string[] = [];
+  private static readonly STALL_THRESHOLD = 3; // Number of identical actions before triggering stall detection
+
   public async start() {
     this.log.info('Loop started. Waiting for messages...');
 
@@ -187,30 +192,33 @@ export class AgentLoop {
     // 消息处理队列锁
     // 如果当前有任务在运行，我们等待它完成（除非被上述逻辑强制中断）
     // 使用 Promise 链实现简单的队列
-    const currentLock = this.sessionLocks.get(sessionId);
+    const currentLock = this.sessionLocks.get(sessionId) || Promise.resolve();
     const lockTimestamp = this.sessionLockTimestamps.get(sessionId) || 0;
     
     // Check for stale lock (e.g. held for more than 5 minutes)
     const LOCK_TIMEOUT_MS = 5 * 60 * 1000;
-    const isStale = currentLock && (Date.now() - lockTimestamp > LOCK_TIMEOUT_MS);
+    const isStale = this.sessionLocks.has(sessionId) && (Date.now() - lockTimestamp > LOCK_TIMEOUT_MS);
 
     if (isStale) {
-        this.log.warn({ sessionId, lockTimestamp }, 'Stale session lock detected, forcing reset');
-        // Force reset the lock
-        this.sessionLocks.delete(sessionId);
-        this.sessionLockTimestamps.delete(sessionId);
-        
-        // Also abort any running controller
-        const controller = this.sessionAbortControllers.get(sessionId);
-        if (controller) {
-             controller.abort();
-             this.sessionAbortControllers.delete(sessionId);
-        }
-    } else if (currentLock) {
+      this.log.warn({ sessionId, lockTimestamp }, 'Stale session lock detected, forcing reset');
+      // Abort the previous controller if it exists
+      const prevController = this.sessionAbortControllers.get(sessionId);
+      if (prevController) {
+        try {
+          prevController.abort();
+        } catch (e) { /* ignore */ }
+        this.sessionAbortControllers.delete(sessionId);
+      }
+      // We don't await currentLock here because it might be hung indefinitely
+      // Just proceed as if the lock is free, but we should be careful about race conditions
+      // In a robust system, we might want to "break" the promise chain, but here we just start a new one.
+      this.sessionLocks.delete(sessionId);
+      this.sessionLockTimestamps.delete(sessionId);
+    } else if (this.sessionLocks.has(sessionId)) {
       this.log.info({ sessionId }, 'Session is busy, queuing new message...');
     }
 
-    const nextTask = (this.sessionLocks.get(sessionId) || Promise.resolve()).then(async () => {
+    const nextTask = (isStale ? Promise.resolve() : currentLock).then(async () => {
       this.log.info({ sessionId, requestId }, 'Acquired session lock, starting processing');
       this.sessionLockTimestamps.set(sessionId, Date.now()); // Update timestamp
       
@@ -259,13 +267,19 @@ export class AgentLoop {
           this.sessionAbortControllers.delete(sessionId);
         }
         
-        // Clear lock timestamp if this was the last task
-        // Actually we can't easily know if it's the last task without checking lock equality,
-        // but since we update timestamp on start, it's fine.
-        // We could delete timestamp if queue is empty, but not critical.
+        // Clear lock timestamp immediately if this was the last task
+        // This ensures the next request doesn't see a stale timestamp
+        // We only clear it if we are sure we are the ones holding the lock,
+        // but since this is sequential, it's generally safe to clear if queue is empty.
+        // However, a safer way is just to update it. We delete it to be clean.
+        this.sessionLockTimestamps.delete(sessionId);
+        this.sessionLocks.delete(sessionId); // Explicitly release the lock promise reference
       }
     }).catch(err => {
       this.log.error({ sessionId, err }, 'Queue error');
+      // Ensure cleanup even on queue errors
+      this.sessionLocks.delete(sessionId);
+      this.sessionLockTimestamps.delete(sessionId);
     });
 
     // 更新锁
@@ -399,8 +413,12 @@ export class AgentLoop {
 
     try {
       const model = this.getModel();
-      // Use config default (now 100) or fallback to 100 if missing
-      const maxIterations = this.config.agents.defaults.max_iterations || 100;
+      // --- Intelligent Termination Logic ---
+      // Instead of hard maxIterations, we use a very high safety cap
+      // and rely on stall detection and natural completion.
+      const maxIterations = this.config.agents.defaults.max_iterations > 5000 
+        ? this.config.agents.defaults.max_iterations 
+        : 5000; // Force high limit for continuous execution
       const maxTokens = this.config.agents.defaults.max_tokens || 8192;
       // Default loop timeout from config (default 10 min)
       const loopTimeoutMs = this.config.agents.defaults.timeout_ms || 600000;
@@ -418,7 +436,10 @@ export class AgentLoop {
       this.log.info({ requestId, sessionId, tools: Object.keys(tools).length }, 'Calling LLM (manual loop)');
 
       // Loop detection state
-      const recentToolCalls: string[] = [];
+      // Reset stall detector for new session
+      this.recentToolCalls = [];
+      this.recentContents = [];
+      const recentToolCalls = this.recentToolCalls;
       const MAX_REPEAT_HISTORY = 5;
 
       while (iteration < maxIterations) {
@@ -689,6 +710,40 @@ export class AgentLoop {
           this.log.debug({ requestId, sessionId, iteration, directives: currentDirectives }, 'Assistant output has directives');
         }
 
+        // --- Stall Detection Logic ---
+        if (result.toolCalls && result.toolCalls.length > 0) {
+          // Check for repetitive tool usage
+          const currentToolCallSignature = result.toolCalls.map((tc: any) => `${tc.toolName}:${JSON.stringify(tc.args)}`).join('|');
+          
+          // Add to recent history
+          this.recentToolCalls.push(currentToolCallSignature);
+          if (this.recentToolCalls.length > AgentLoop.STALL_THRESHOLD) {
+            this.recentToolCalls.shift();
+          }
+
+          // Check if all recent calls are identical
+          if (this.recentToolCalls.length === AgentLoop.STALL_THRESHOLD && this.recentToolCalls.every(c => c === currentToolCallSignature)) {
+            this.log.warn({ signature: currentToolCallSignature }, 'Stall detected: Repetitive tool usage');
+            finalContent = `任务似乎陷入了循环，我连续多次执行了相同的操作 (${currentToolCallSignature})。为了避免浪费资源，我已停止执行。请检查任务描述或提供更多指导。`;
+            break;
+          }
+        } else {
+          // No tool calls - Check for repetitive text content
+          // Only check if text is substantial (> 10 chars)
+          if (pureText && pureText.length > 10) {
+             this.recentContents.push(pureText);
+             if (this.recentContents.length > AgentLoop.STALL_THRESHOLD) {
+                this.recentContents.shift();
+             }
+
+             if (this.recentContents.length === AgentLoop.STALL_THRESHOLD && this.recentContents.every(c => c === pureText)) {
+                this.log.warn('Stall detected: Repetitive text output');
+                finalContent = `任务似乎陷入了循环，我连续多次输出了相同的内容。为了避免无限循环，我已停止执行。`;
+                break;
+             }
+          }
+        }
+
         if (result.toolCalls && result.toolCalls.length > 0) {
           this.log.debug({ requestId, sessionId, iteration, tools: result.toolCalls.length }, 'Executing tools');
 
@@ -716,32 +771,74 @@ export class AgentLoop {
 
           if (results.length > 0) {
             // Streaming behavior: Send tool execution results immediately
+            
+            // Check config for verbose output preference
+            // Ensure boolean conversion and fallback
+            const configValue = this.config.agents?.defaults?.verbose_tool_output;
+            const verboseOutput = configValue === undefined ? true : configValue;
+            
+            this.log.info({ 
+              verboseOutput, 
+              rawConfigValue: configValue,
+              configDefaults: this.config.agents?.defaults 
+            }, 'Verbose tool output check');
+
             const toolOutput = results.map(r => {
               const originalCall = result.toolCalls?.find((tc: any) => tc.toolCallId === r.toolCallId);
               const args = originalCall ? (originalCall.args as any) : {};
 
-              let header = `**🔨 ${r.toolName}**`;
-              if (r.toolName === 'runCommand' && args.command) {
-                const cmd = args.command;
-                // Show full command in a code block on new line for mobile readability
-                header += `:\n\`\`\`bash\n${cmd}\n\`\`\``;
-              } else if ((r.toolName === 'readFile' || r.toolName === 'read_file') && args.file_path) {
-                const fname = args.file_path.split('/').pop();
-                header += `: \`${fname}\``;
+              if (verboseOutput) {
+                  // --- Original Verbose Mode ---
+                  let header = `**🔨 ${r.toolName}**`;
+                  if (r.toolName === 'runCommand' && args.command) {
+                    const cmd = args.command;
+                    // Show full command in a code block on new line for mobile readability
+                    header += `:\n\`\`\`bash\n${cmd}\n\`\`\``;
+                  } else if ((r.toolName === 'readFile' || r.toolName === 'read_file') && args.file_path) {
+                    const fname = args.file_path.split('/').pop();
+                    header += `: \`${fname}\``;
+                  }
+
+                  let status = '✅ **Success**';
+                  const res = r.result;
+
+                  if (r.isError) {
+                    status = '❌ **Failed**';
+                  } else if (typeof res === 'string' && res.startsWith('Error:')) {
+                    status = '❌ **Failed**';
+                  } else if (res && typeof res === 'object' && 'exitCode' in res && res.exitCode !== 0) {
+                    status = '❌ **Failed**';
+                  }
+                  return `${header}\n${status}`;
+
+              } else {
+                  // --- Simplified User-Friendly Mode ---
+                  let header = `**🔨 ${r.toolName}**`;
+                  if (r.toolName === 'runCommand' && args.command) {
+                    const cmd = args.command.length > 50 ? args.command.substring(0, 47) + '...' : args.command;
+                    header += `: \`${cmd}\``;
+                  } else if ((r.toolName === 'readFile' || r.toolName === 'read_file') && args.file_path) {
+                    const fname = args.file_path.split('/').pop();
+                    header += `: \`${fname}\``;
+                  } else if (r.toolName === 'web_search' && args.query) {
+                    header += `: "${args.query}"`;
+                  } else if (r.toolName === 'spawnSubagent' && args.goal) {
+                    header += `: "${args.goal.substring(0, 30)}..."`;
+                  }
+    
+                  let status = '✅ **Success**';
+                  const res = r.result;
+    
+                  if (r.isError) {
+                    status = '❌ **Failed**';
+                  } else if (typeof res === 'string' && res.startsWith('Error:')) {
+                    status = '❌ **Failed**';
+                  } else if (res && typeof res === 'object' && 'exitCode' in res && res.exitCode !== 0) {
+                    status = '❌ **Failed**';
+                  }
+                  
+                  return `${header} ${status}`;
               }
-
-              let status = '✅ **Success**';
-              const res = r.result;
-
-              if (r.isError) {
-                status = '❌ **Failed**';
-              } else if (typeof res === 'string' && res.startsWith('Error:')) {
-                status = '❌ **Failed**';
-              } else if (res && typeof res === 'object' && 'exitCode' in res && res.exitCode !== 0) {
-                status = '❌ **Failed**';
-              }
-
-              return `${header}\n${status}`;
             }).join('\n\n');
 
             this.log.debug({ requestId, sessionId, iteration }, `Tool result update:\n${toolOutput}`);
@@ -935,14 +1032,30 @@ export class AgentLoop {
       const contextBuilder = new ContextBuilder(this.config);
       await contextBuilder.initialize();
 
-      // Inject tool definitions into system prompt
-      const toolDefinitions = this.toolRegistry.getToolDefinitionsSummary();
-      const systemPrompt = await contextBuilder.buildSystemPrompt(channel, chatId, toolDefinitions);
-
-      // Debug: Log subagent manager status
+      // Ensure SubagentManager is initialized
       if (!this.subagentManager) {
-        this.log.error({ sessionId }, 'SubagentManager is not initialized in AgentLoop!');
+        this.log.warn({ sessionId }, 'SubagentManager is not initialized in AgentLoop! Attempting lazy initialization...');
+        try {
+           const workspacePath = getWorkspacePath(this.config);
+           this.subagentManager = new SubagentManager(
+             this.getModel(),
+             workspacePath,
+             bus,
+             this.config,
+             this.toolRegistry
+           );
+           this.log.info({ sessionId }, 'SubagentManager initialized lazily.');
+        } catch (initErr) {
+           this.log.error({ sessionId, err: initErr }, 'Failed to lazy initialize SubagentManager');
+        }
       }
+
+      // Inject tool definitions into system prompt
+      const toolDefinitions = this.toolRegistry.getToolDefinitionsSummary({
+        subagentManager: this.subagentManager,
+        memoryStore: this.memoryStore,
+      });
+      const systemPrompt = await contextBuilder.buildSystemPrompt(channel, chatId, toolDefinitions);
 
       const { tools, initPromise } = this.toolRegistry.getTools({
         subagentManager: this.subagentManager,
@@ -997,7 +1110,10 @@ export class AgentLoop {
           const contextBuilder = new ContextBuilder(this.config);
           await contextBuilder.initialize();
 
-          const toolDefinitions = this.toolRegistry.getToolDefinitionsSummary();
+          const toolDefinitions = this.toolRegistry.getToolDefinitionsSummary({
+            subagentManager: this.subagentManager,
+            memoryStore: this.memoryStore,
+          });
           const systemPrompt = await contextBuilder.buildSystemPrompt(channel, chatId, toolDefinitions);
 
           const { tools } = this.toolRegistry.getTools({

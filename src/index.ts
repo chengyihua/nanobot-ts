@@ -22,6 +22,24 @@ import { RedisTransportAdapter } from './core/bus-redis.js';
 
 const rootLog = createLogger('cli');
 
+// Global Error Handlers to prevent process crash on fetch aborts
+process.on('uncaughtException', (err: any) => {
+  if (err.name === 'AbortError' || err.type === 'aborted') {
+    // Ignore fetch abort errors (happens when streams are cancelled)
+    return;
+  }
+  console.error('Uncaught Exception:', err);
+  // Optionally exit if critical, but for now we keep running
+});
+
+process.on('unhandledRejection', (reason: any, promise) => {
+  if (reason?.name === 'AbortError' || reason?.type === 'aborted') {
+    // Ignore fetch abort errors
+    return;
+  }
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const program = new Command();
 
 program
@@ -119,7 +137,7 @@ program
         bus.publish({
           id: Math.random().toString(36).substring(7),
           source: 'cron',
-          target: job.payload.channel, // Explicitly target the channel
+          target: 'agent', // Target the agent to process the prompt
           content: job.payload.message,
           type: 'text',
           timestamp: Date.now(),
@@ -129,6 +147,8 @@ program
             deliver: job.payload.deliver,
             channel: job.payload.channel,
             to: job.payload.to,
+            originChannel: job.payload.channel,
+            originChatId: job.payload.to,
           },
         });
         return 'Message published to bus';
@@ -280,6 +300,7 @@ program
         bus.publish({
           id: Math.random().toString(36).substring(7),
           source: 'cron',
+          target: 'agent', // Target the agent to process the prompt
           content: job.payload.message,
           type: 'text',
           timestamp: Date.now(),

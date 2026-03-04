@@ -1,0 +1,41 @@
+{
+  "date": "$(date '+%Y-%m-%d')",
+  "topics": [
+    {
+      "id": 1,
+      "title": "AI Agent技术架构演进与核心突破",
+      "type": "技术分析",
+      "focus": "架构设计、核心技术、性能优化",
+      "target_length": 1200,
+      "images_needed": 4,
+      "keywords": ["AI技术", "架构设计", "性能优化", "开源框架"],
+      "publish_time": "08:00"
+    },
+    {
+      "id": 2,
+      "title": "企业级AI Agent应用实践与效果评估",
+      "type": "应用案例",
+      "focus": "实际应用、效果评估、实施经验",
+      "target_length": 1000,
+      "images_needed": 3,
+      "keywords": ["企业应用", "案例研究", "数字化转型", "效率提升"],
+      "publish_time": "12:00"
+    },
+    {
+      "id": 3,
+      "title": "2026年AI Agent发展趋势与投资机会",
+      "type": "趋势分析",
+      "focus": "市场动态、技术方向、未来预测",
+      "target_length": 1500,
+      "images_needed": 5,
+      "keywords": ["行业趋势", "市场分析", "未来预测", "投资机会"],
+      "publish_time": "18:00"
+    }
+  ],
+  "summary": {
+    "total_articles": 3,
+    "total_words": 3700,
+    "total_images": 12,
+    "publish_schedule": ["08:00", "12:00", "18:00"]
+  }
+}

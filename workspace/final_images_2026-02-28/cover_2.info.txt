@@ -1,0 +1,6 @@
+主题: AI医疗突破：诊断、药物研发、健康管理
+风格: 医疗健康
+Prompt: AI医疗, 医生与AI协作, 医疗设备, DNA双螺旋, 蓝色和白色, 干净专业, 可信赖感, 4K, 高质量
+输出文件: /Users/chengyihua/Downloads/nanobot-main/nanobot-ts/workspace/final_images_2026-02-28/cover_2.jpg
+生成时间: 2026-02-28 09:23:54
+状态: 需要调用baoyu-image-gen技能生成
